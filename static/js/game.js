@@ -1,4 +1,4 @@
-/* ── api helpers ─────────────────────────────────────────────────────────── */
+/* ── api ─────────────────────────────────────────────────────────────────── */
 async function apiGet(url) {
   const r = await fetch(url);
   return r.json();
@@ -12,25 +12,74 @@ async function apiPost(url, data = {}) {
   return r.json();
 }
 
-/* ── global state ────────────────────────────────────────────────────────── */
-let G = null;           // current game state from server
-let msgTimer = null;    // clears transient success messages
+function gameUrl(path) {
+  return `/api/game/${GAME_ID}/${TOKEN}/${path}`;
+}
 
-/* ── entry point ─────────────────────────────────────────────────────────── */
+/* ── state ───────────────────────────────────────────────────────────────── */
+let G = null;
+let pollTimer = null;
+let lastRenderKey = null;  // avoid thrashing on unchanged state
+let msgTimer = null;
+
+function renderKey(s) {
+  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}`;
+}
+
+/* ── entry ───────────────────────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", async () => {
-  G = await apiGet("/api/state");
-  render(G);
+  if (GAME_ID && TOKEN) {
+    G = await apiGet(gameUrl("state"));
+    render(G);
+    startPolling();
+  } else {
+    renderSetup();
+  }
 });
 
-/* ── main render dispatch ─────────────────────────────────────────────────── */
+/* ── polling ─────────────────────────────────────────────────────────────── */
+function startPolling() {
+  if (pollTimer) return;
+  pollTimer = setInterval(async () => {
+    if (!GAME_ID || !TOKEN) return;
+    const s = await apiGet(gameUrl("state"));
+    const key = renderKey(s);
+    if (key !== lastRenderKey) {
+      G = s;
+      render(G);
+    }
+  }, 2000);
+}
+function stopPolling() {
+  clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+/* ── render dispatch ─────────────────────────────────────────────────────── */
 function render(state) {
   G = state;
+  lastRenderKey = renderKey(state);
   const app = document.getElementById("app");
-  if      (state.phase === "setup")       app.innerHTML = setupHTML();
-  else if (state.phase === "arrangement") app.innerHTML = arrangeHTML(state);
-  else if (state.phase === "game")        app.innerHTML = gameHTML(state);
-  else if (state.phase === "end")         app.innerHTML = endHTML(state);
-  bindAll(state);
+
+  if (!GAME_ID) {
+    renderSetup(); return;
+  }
+  if (state.phase === "arrangement") {
+    const me = state.players[MY_IDX];
+    if (!me.arranged) {
+      app.innerHTML = arrangeHTML(state);
+      bindArrange(state);
+    } else {
+      app.innerHTML = waitingHTML(state);
+    }
+  } else if (state.phase === "game") {
+    app.innerHTML = gameHTML(state);
+    bindGame(state);
+  } else if (state.phase === "end") {
+    stopPolling();
+    app.innerHTML = endHTML(state);
+    bindEnd();
+  }
 }
 
 function showMsg(msg, cls = "") {
@@ -39,12 +88,12 @@ function showMsg(msg, cls = "") {
   if (msgTimer) clearTimeout(msgTimer);
   el.textContent = msg;
   el.className = "action-msg " + cls;
-  if (cls === "success") msgTimer = setTimeout(() => { el.textContent = ""; el.className = "action-msg"; }, 2500);
+  if (cls === "success") msgTimer = setTimeout(() => { el.textContent = ""; el.className = "action-msg"; }, 3000);
 }
 
-/* ── SETUP ───────────────────────────────────────────────────────────────── */
-function setupHTML() {
-  return `
+/* ══ SETUP SCREEN (host — no GAME_ID yet) ═══════════════════════════════════ */
+function renderSetup() {
+  document.getElementById("app").innerHTML = `
 <div class="screen">
   <h1 class="title">Don't Be the Third Wheel!</h1>
   <p class="subtitle">A romantic scheduling strategy game for 2–3 players</p>
@@ -53,21 +102,21 @@ function setupHTML() {
     <div class="form-group">
       <label>Number of Players</label>
       <div class="radio-group">
-        <label><input type="radio" name="np" value="2" id="np2"> 2 Players</label>
-        <label><input type="radio" name="np" value="3" id="np3" checked> 3 Players</label>
+        <label><input type="radio" name="np" value="2"> 2 Players</label>
+        <label><input type="radio" name="np" value="3" checked> 3 Players</label>
       </div>
     </div>
     <div class="form-group">
       <label>Player Names</label>
       <div class="name-fields">
         ${[1,2,3].map(i => `
-          <div class="player-name-row" id="name-row-${i}">
+          <div class="player-name-row" id="nr${i}">
             <span class="pnum">P${i}</span>
-            <input class="player-name-input" id="pname${i}" placeholder="Player ${i}" value="Player ${i}" />
+            <input class="player-name-input" id="pn${i}" value="Player ${i}" />
           </div>`).join("")}
       </div>
     </div>
-    <button id="start-btn" class="btn btn-primary">▶ Start Game</button>
+    <button id="create-btn" class="btn btn-primary">Create Game →</button>
   </div>
 
   <div class="rules-grid">
@@ -81,145 +130,179 @@ function setupHTML() {
     </div>
     <div class="rules-box">
       <h3>Scoring</h3>
-      <div class="rule-row">2 players same card on same day → 1st arrival: +1 pt,  2nd arrival: +2 pts</div>
-      <div class="rule-row">3 players same card on same day → 1st: 0,  2nd: 0,  3rd (third wheel!): −1 pt</div>
+      <div class="rule-row">2 players same card/day → 1st: +1 pt,  2nd: +2 pts</div>
+      <div class="rule-row">3 players same card/day → 1st: 0,  2nd: 0,  3rd (third wheel!): −1 pt</div>
       <div class="rule-row">1 player alone on a day → no points</div>
     </div>
   </div>
 </div>`;
-}
 
-function bindSetup() {
-  // toggle third name row based on player count
   const updateRows = () => {
     const n = +document.querySelector('input[name="np"]:checked').value;
-    document.getElementById("name-row-3").style.display = n >= 3 ? "" : "none";
+    document.getElementById("nr3").style.display = n >= 3 ? "" : "none";
   };
   document.querySelectorAll('input[name="np"]').forEach(r => r.addEventListener("change", updateRows));
   updateRows();
 
-  document.getElementById("start-btn").addEventListener("click", async () => {
+  document.getElementById("create-btn").addEventListener("click", async () => {
     const n = +document.querySelector('input[name="np"]:checked').value;
-    const names = [1, 2, 3].map(i => document.getElementById(`pname${i}`).value.trim());
-    G = await apiPost("/api/setup", { num_players: n, names });
-    render(G);
+    const names = [1,2,3].map(i => document.getElementById(`pn${i}`).value.trim());
+    const res = await apiPost("/api/create", { num_players: n, names });
+    renderLobby(res);
   });
 }
 
-/* ── ARRANGEMENT ──────────────────────────────────────────────────────────── */
-function arrangeHTML(state) {
-  const pidx = state.arrange_idx;
-  const player = state.players[pidx];
-  const total = state.players.length;
+/* ── lobby (after creating a game) ──────────────────────────────────────────── */
+function renderLobby(res) {
+  const { game_id, tokens, player_names } = res;
+  const base = window.location.origin;
 
+  document.getElementById("app").innerHTML = `
+<div class="screen">
+  <h1 class="title" style="font-size:1.7rem">Game Created!</h1>
+  <p class="subtitle">Share each player's link below, then open your own.</p>
+
+  <div class="lobby-box">
+    <p style="color:#CCAAFF;margin-bottom:14px;font-size:.9rem">
+      Each player opens their own link on their own device.
+      Arrangement happens simultaneously — no passing required.
+    </p>
+    ${player_names.map((name, i) => `
+      <div class="player-link-card">
+        <span class="plname">${name}</span>
+        <span class="plurl" id="url${i}">${base}/game/${game_id}/${tokens[i]}</span>
+        <button class="copy-btn" onclick="copyLink('url${i}', this)">Copy link</button>
+      </div>`).join("")}
+  </div>
+</div>`;
+}
+
+function copyLink(elId, btn) {
+  const url = document.getElementById(elId).textContent;
+  navigator.clipboard.writeText(url).then(() => {
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = "Copy link", 2000);
+  });
+}
+
+/* ══ ARRANGEMENT ════════════════════════════════════════════════════════════ */
+function arrangeHTML(state) {
+  const me = state.players[MY_IDX];
   return `
 <div class="arrange-screen">
-  <h1 class="title" style="font-size:1.8rem">Schedule Your Dates!</h1>
+  <h1 class="title" style="font-size:1.7rem">Schedule Your Dates!</h1>
   <p class="subtitle">
-    ${pidx > 0 ? `<strong style="color:#FFD700">Pass the device to ${player.name}.</strong><br>` : ""}
-    Player <strong>${pidx + 1} / ${total}</strong>: <strong style="color:#FFD700">${player.name}</strong>
-    — assign each location to a Day (others can't see your choices).
+    <strong style="color:#80FFCC">${me.name}</strong> —
+    assign each location to a Day. Only you can see this screen.
   </p>
 
-  <div class="rules-box" style="max-width:500px;margin:0 auto 16px;font-size:.82rem">
-    <strong style="color:#CCAAFF">How to arrange:</strong>
-    Click a location card to select it, then click a Day slot to place it.
-    Each location goes to exactly one day.
-  </div>
-
-  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:8px">Location Cards</p>
+  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:6px">Location Cards</p>
   <div class="loc-cards" id="loc-cards">
     ${[1,2,3,4,5,6].map(ct => `
-      <button class="loc-btn ct-${ct}" id="loc-${ct}"
-              style="background:${LOC_COLORS[ct]};border-color:${LOC_COLORS[ct]}">
-        <span class="num">${ct}</span>
-        <span class="name">${LOCATION_NAMES[ct]}</span>
+      <button class="loc-btn" id="loc-${ct}" style="background:${LOC_COLORS[ct]};border-color:${LOC_COLORS[ct]}">
+        <span class="lnum">${ct}</span>
+        <span class="lname">${LOCATION_NAMES[ct]}</span>
+        <span class="labil">${CARD_ABILITIES[ct]}</span>
       </button>`).join("")}
   </div>
 
-  <p style="text-align:center;font-weight:700;color:#CC99FF;margin:4px 0 8px">Day Slots</p>
+  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:6px">Day Slots</p>
   <div class="day-slots" id="day-slots">
     ${[1,2,3,4,5,6].map(d => `
       <div class="day-slot" id="slot-${d}">
-        <span class="day-label">Day ${d}</span>
-        <span class="day-ct"></span>
-        <span class="day-name" style="color:#8870aa">(empty)</span>
+        <span class="dlabel">Day ${d}</span>
+        <span class="dct"></span>
+        <span class="dname" style="color:#8870aa">(empty)</span>
       </div>`).join("")}
   </div>
 
   <p class="arrange-status" id="arr-status">Select a location card to begin.</p>
-  <button id="arr-confirm" class="btn btn-primary arrange-confirm" disabled>Confirm Arrangement →</button>
+  <button id="arr-confirm" class="btn btn-primary arrange-confirm" disabled>Lock In My Schedule →</button>
 </div>`;
 }
 
 function bindArrange(state) {
   let selCt = 0;
-  const assigned = {};   // ct -> day
-  const dayTaken = {};   // day -> ct
-
-  function selectCt(ct) {
-    if (assigned[ct]) { setStatus(`Card ${ct} is already placed on Day ${assigned[ct]}!`); return; }
-    selCt = ct;
-    document.querySelectorAll(".loc-btn").forEach(b => b.classList.remove("selected"));
-    document.getElementById(`loc-${ct}`).classList.add("selected");
-    setStatus(`Selected: ${ct} – ${LOCATION_NAMES[ct]}. Now click a Day slot.`);
-  }
-
-  function assignDay(day) {
-    if (!selCt) { setStatus("Select a location card first!"); return; }
-    if (assigned[selCt]) { setStatus(`Card ${selCt} is already placed!`); return; }
-    if (dayTaken[day]) { setStatus(`Day ${day} already has a card! Choose another.`); return; }
-
-    assigned[selCt] = day;
-    dayTaken[day] = selCt;
-
-    // update slot
-    const slot = document.getElementById(`slot-${day}`);
-    slot.classList.add("filled");
-    slot.style.background = LOC_COLORS[selCt];
-    slot.querySelector(".day-ct").textContent = selCt;
-    slot.querySelector(".day-name").textContent = LOCATION_NAMES[selCt];
-    slot.querySelector(".day-name").style.color = "";
-
-    // disable loc button
-    const locBtn = document.getElementById(`loc-${selCt}`);
-    locBtn.disabled = true;
-    locBtn.classList.remove("selected");
-
-    selCt = 0;
-    const remaining = 6 - Object.keys(assigned).length;
-    if (remaining === 0) {
-      setStatus("All cards placed! Click Confirm to continue.");
-      document.getElementById("arr-confirm").disabled = false;
-    } else {
-      setStatus(`${remaining} card(s) still to place.`);
-    }
-  }
+  const assigned = {};
+  const dayTaken = {};
 
   function setStatus(msg) { document.getElementById("arr-status").textContent = msg; }
 
   document.querySelectorAll(".loc-btn").forEach(btn => {
-    btn.addEventListener("click", () => selectCt(+btn.id.split("-")[1]));
+    btn.addEventListener("click", () => {
+      const ct = +btn.id.split("-")[1];
+      if (assigned[ct]) { setStatus(`Card ${ct} already placed on Day ${assigned[ct]}!`); return; }
+      selCt = ct;
+      document.querySelectorAll(".loc-btn").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      setStatus(`Selected: ${ct} – ${LOCATION_NAMES[ct]}. Now click a Day slot.`);
+    });
   });
+
   document.querySelectorAll(".day-slot").forEach(slot => {
-    slot.addEventListener("click", () => assignDay(+slot.id.split("-")[1]));
+    slot.addEventListener("click", () => {
+      const day = +slot.id.split("-")[1];
+      if (!selCt) { setStatus("Select a location card first!"); return; }
+      if (assigned[selCt]) { setStatus(`Card ${selCt} already placed!`); return; }
+      if (dayTaken[day]) { setStatus(`Day ${day} is taken! Choose another.`); return; }
+
+      assigned[selCt] = day;
+      dayTaken[day] = selCt;
+      slot.classList.add("filled");
+      slot.style.background = LOC_COLORS[selCt];
+      slot.querySelector(".dct").textContent = selCt;
+      slot.querySelector(".dname").textContent = LOCATION_NAMES[selCt];
+      slot.querySelector(".dname").style.color = "";
+      document.getElementById(`loc-${selCt}`).disabled = true;
+      document.getElementById(`loc-${selCt}`).classList.remove("selected");
+      selCt = 0;
+      const rem = 6 - Object.keys(assigned).length;
+      if (rem === 0) {
+        setStatus("All cards placed! Click Lock In to continue.");
+        document.getElementById("arr-confirm").disabled = false;
+      } else {
+        setStatus(`${rem} card(s) still to place.`);
+      }
+    });
   });
+
   document.getElementById("arr-confirm").addEventListener("click", async () => {
-    G = await apiPost("/api/arrange", { arrangement: assigned });
+    G = await apiPost(gameUrl("arrange"), { arrangement: assigned });
     render(G);
   });
 }
 
-/* ── GAME ─────────────────────────────────────────────────────────────────── */
+function waitingHTML(state) {
+  const waiting = state.players.filter(p => !p.arranged).map(p => p.name);
+  return `
+<div class="screen center">
+  <h1 class="title" style="font-size:1.6rem">Schedule Locked In!</h1>
+  <div class="waiting-box">
+    <h3>Waiting for other players…</h3>
+    <div class="spinner"></div>
+    ${waiting.map(n => `<p>${n} is still arranging</p>`).join("")}
+    <p style="margin-top:12px;font-size:.82rem;color:#8870aa">
+      This page will advance automatically when everyone is ready.
+    </p>
+  </div>
+</div>`;
+}
+
+/* ══ GAME SCREEN ════════════════════════════════════════════════════════════ */
 function gameHTML(state) {
   const cur = state.current_player_idx;
+  const isMyTurn = cur === MY_IDX;
   const scores = state.scores || {};
+  const turnPlayerName = state.players[cur].name;
 
   return `
 <div class="game-wrap">
   <div class="topbar">
     <span class="topbar-title">Don't Be the Third Wheel!</span>
-    <span class="topbar-turn">Turn ${state.turn_count + 1} — <strong>${state.players[cur].name}</strong>'s turn</span>
+    <span class="topbar-turn">
+      Turn ${state.turn_count + 1} —
+      ${isMyTurn ? "<strong style='color:#FFD700'>Your turn!</strong>" : `<strong>${turnPlayerName}</strong>'s turn`}
+    </span>
     <div class="topbar-btns">
       <button class="btn btn-green" id="btn-scores">Scores</button>
       <button class="btn btn-red"   id="btn-end">End Game</button>
@@ -227,148 +310,172 @@ function gameHTML(state) {
   </div>
 
   <div class="action-strip">
-    <span class="action-msg" id="action-msg">
-      ${state.pending_action ? (state.action_message || "") : ""}
+    <span class="action-msg ${isMyTurn && state.pending_action ? "" : isMyTurn ? "" : "waiting"}" id="action-msg">
+      ${state.pending_action && isMyTurn
+        ? state.action_message || ""
+        : isMyTurn
+          ? "Your turn — click one of your face-down cards to flip it."
+          : `Waiting for ${turnPlayerName} to play…`}
     </span>
-    ${state.pending_action ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>` : ""}
+    ${isMyTurn && state.pending_action
+      ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>`
+      : ""}
   </div>
 
   <div class="board-container">
     <div class="board">
-      <!-- header row -->
-      <div class="board-header" style="background:transparent"></div>
-      ${[1,2,3,4,5,6].map(d => `<div class="board-header">Day ${d}</div>`).join("")}
-
-      <!-- player rows -->
-      ${state.players.map((player, pi) => `
-        <div class="board-player-label ${pi === cur ? "active-player" : ""}">
-          ${pi === cur ? "▶ " : ""}${player.name}
-        </div>
-        ${player.cards.map((card, di) => cardBtnHTML(state, pi, di + 1, card)).join("")}
-      `).join("")}
+      <div class="board-corner"></div>
+      ${[1,2,3,4,5,6].map(d => `<div class="board-day-header">Day ${d}</div>`).join("")}
+      ${state.players.map((player, pi) => boardRowHTML(state, pi, player)).join("")}
     </div>
   </div>
 
   <div class="score-strip">
-    ${state.players.map(p => `
-      <span class="score-item"><strong>${p.name}</strong>: ${scores[p.name] !== undefined ? (scores[p.name] >= 0 ? "+" : "") + scores[p.name] : 0} pts</span>
-    `).join("")}
+    ${state.players.map(p =>
+      `<span class="score-item"><strong>${p.name}</strong>: ${
+        scores[p.name] !== undefined ? (scores[p.name] >= 0 ? "+" : "") + scores[p.name] : 0
+      } pts</span>`
+    ).join("")}
   </div>
 </div>`;
 }
 
-function cardBtnHTML(state, pi, day, card) {
-  const cur = state.current_player_idx;
+function boardRowHTML(state, pi, player) {
+  const isMe = pi === MY_IDX;
+  const isActive = pi === state.current_player_idx;
+  const labelCls = [isMe ? "is-me" : "", isActive ? "is-active" : ""].filter(Boolean).join(" ");
+  return `
+    <div class="board-player-label ${labelCls}">
+      ${isActive ? "▶ " : ""}${player.name}${isMe ? " (you)" : ""}
+    </div>
+    ${player.cards.map((card, di) => cardHTML(state, pi, di + 1, card)).join("")}`;
+}
+
+function cardHTML(state, pi, day, card) {
+  const isMe = pi === MY_IDX;
+  const isMyTurn = state.current_player_idx === MY_IDX;
   const action = state.pending_action;
   const ctx = state.action_ctx || {};
+  const isActive = pi === state.current_player_idx;
+  const arrivals = state.arrivals || {};
 
-  let cls = "card-btn";
-  cls += card.face_up ? ` face-up ct-${card.card_type}` : " face-down";
-
+  // Decide visual state class
+  let stateCls = "";
   if (!action) {
-    // no pending action — highlight current player's flippable cards
-    if (pi === cur && !card.face_up) cls += " flippable";
-  } else {
-    // figure out if this card is a valid target, first-selected, or dimmed
-    const isOther = pi !== cur;
-    const isOwn   = pi === cur;
+    if (isActive && !card.face_up && isMyTurn) stateCls = "flippable";
+  } else if (isMyTurn) {
+    const isOther = !isMe;
+    const isOwn   = isMe;
     let valid = false;
 
     if (action === "flip_other_down")  valid = isOther && card.face_up;
     if (action === "flip_own_down")    valid = isOwn && card.face_up;
     if (action === "swap_other_1")     valid = isOther;
     if (action === "swap_other_2") {
-      valid = pi === ctx.first_pi && day !== ctx.first_day;
-      if (pi === ctx.first_pi && day === ctx.first_day) cls += " selected-first";
+      if (pi === ctx.first_pi && day === ctx.first_day) stateCls = "selected-first";
+      else valid = pi === ctx.first_pi && day !== ctx.first_day;
     }
-    if (action === "swap_own_1")       valid = isOwn;
+    if (action === "swap_own_1")  valid = isOwn;
     if (action === "swap_own_2") {
-      valid = isOwn && day !== ctx.first_day;
-      if (isOwn && day === ctx.first_day) cls += " selected-first";
+      if (isOwn && day === ctx.first_day) stateCls = "selected-first";
+      else valid = isOwn && day !== ctx.first_day;
     }
     if (action === "change_arr_other") {
       const k = `${day},${card.card_type}`;
-      const arr = state.arrivals ? state.arrivals[k] : [];
-      valid = isOther && card.face_up && arr && arr.length >= 2;
+      valid = isOther && card.face_up && (arrivals[k] || []).length >= 2;
     }
     if (action === "change_arr_own") {
       const k = `${day},${card.card_type}`;
-      const arr = state.arrivals ? state.arrivals[k] : [];
-      valid = isOwn && card.face_up && arr && arr.length >= 2;
+      valid = isOwn && card.face_up && (arrivals[k] || []).length >= 2;
     }
-    if (action === "set_arrival") valid = false; // waiting for modal
+    if (action === "set_arrival") valid = false;
 
-    if (valid)  cls += " target-valid";
-    else        cls += " dimmed";
+    if (!stateCls) stateCls = valid ? "target-valid" : "dimmed";
   }
 
-  const arrLabels = { 1: "▲ 1st", 2: "■ 2nd", 3: "▼ 3rd" };
-  const arrText = card.face_up ? (arrLabels[card.arrival] || `#${card.arrival}`) : "";
+  // Opponent face-down: mystery card
+  if (!card.face_up && !isMe) {
+    return `
+<button class="card face-down other ${stateCls}"
+        data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
+  <span class="mystery-symbol">?</span>
+  <span class="mystery-label">face down</span>
+</button>`;
+  }
 
+  // Own face-down: show full card info, styled differently
+  if (!card.face_up && isMe) {
+    const ct = card.card_type;
+    return `
+<button class="card face-down own ct-${ct} ${stateCls}"
+        data-pi="${pi}" data-day="${day}">
+  <span class="card-face-down-badge">face down</span>
+  <div class="card-header">
+    <span class="card-num">${ct}</span>
+    <span class="card-name">${LOCATION_NAMES[ct]}</span>
+  </div>
+  <hr class="card-divider"/>
+  <div class="card-ability">${CARD_ABILITIES[ct]}</div>
+  <div class="card-scoring">2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1</div>
+</button>`;
+  }
+
+  // Face-up card (anyone's)
+  const ct = card.card_type;
+  const arrLabel = { 1: "▲ 1st arrival", 2: "■ 2nd arrival", 3: "▼ 3rd arrival" };
   return `
-<button class="card-btn ${cls}"
-        data-pi="${pi}" data-day="${day}"
-        ${action === "set_arrival" ? "disabled" : ""}>
-  ${card.face_up ? `<span class="arr-badge">${arrText}</span>` : ""}
-  <span class="card-ct">${card.face_up ? card.card_type : "?"}</span>
-  <span class="card-loc">${card.face_up ? LOCATION_NAMES[card.card_type] : "face down"}</span>
+<button class="card face-up ct-${ct} ${stateCls}"
+        data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
+  <div class="card-header">
+    <span class="card-num">${ct}</span>
+    <span class="card-name">${LOCATION_NAMES[ct]}</span>
+  </div>
+  ${card.arrival ? `<div class="card-arrival">${arrLabel[card.arrival] || `#${card.arrival}`}</div>` : ""}
+  <hr class="card-divider"/>
+  <div class="card-ability">${CARD_ABILITIES[ct]}</div>
+  <div class="card-scoring">2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1</div>
 </button>`;
 }
 
 function bindGame(state) {
-  // card clicks
-  document.querySelectorAll(".card-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const pi  = +btn.dataset.pi;
-      const day = +btn.dataset.day;
-      await handleCardClick(pi, day);
-    });
+  document.querySelectorAll(".card").forEach(btn => {
+    if (!btn.disabled) {
+      btn.addEventListener("click", () => handleCardClick(+btn.dataset.pi, +btn.dataset.day));
+    }
   });
 
   document.getElementById("btn-cancel")?.addEventListener("click", async () => {
-    G = await apiPost("/api/cancel");
+    G = await apiPost(gameUrl("cancel"));
     render(G);
   });
-
   document.getElementById("btn-scores").addEventListener("click", () => showScoresModal(G));
   document.getElementById("btn-end").addEventListener("click", async () => {
     if (confirm("End the game now and see final scores?")) {
-      G = await apiPost("/api/end_game");
+      G = await apiPost(gameUrl("end_game"));
       render(G);
     }
   });
 }
 
 async function handleCardClick(pi, day) {
+  if (MY_IDX !== G.current_player_idx && !G.pending_action) {
+    return; // not our turn, ignore
+  }
   if (G.pending_action) {
-    // send as action target
-    const resp = await apiPost("/api/action", { player_idx: pi, day });
+    const resp = await apiPost(gameUrl("action"), { player_idx: pi, day });
     const result = resp.action_result || {};
-    if (result.error) {
-      showMsg(result.error, "error");
-      return;  // don't re-render — keep current state
-    }
+    if (result.error) { showMsg(result.error, "error"); return; }
     if (result.needs_position && result.arrival_info) {
-      // store partial state then show modal
-      G = resp;
-      render(G);
+      G = resp; render(G);
       showArrivalModal(result.arrival_info);
       return;
     }
-    if (result.message) showMsg(result.message, "success");
-    G = resp;
-    render(G);
+    G = resp; render(G);
     if (result.message) showMsg(result.message, "success");
   } else {
-    // normal flip
-    if (pi !== G.current_player_idx) {
-      showMsg(`It's ${G.players[G.current_player_idx].name}'s turn!`, "error");
-      return;
-    }
-    const card = G.players[pi].cards[day - 1];
-    if (card.face_up) { showMsg("That card is already face up.", "error"); return; }
-    G = await apiPost("/api/flip", { day });
-    render(G);
+    if (pi !== MY_IDX) return;
+    const resp = await apiPost(gameUrl("flip"), { day });
+    G = resp; render(G);
     if (G.action_message) showMsg(G.action_message);
   }
 }
@@ -384,27 +491,28 @@ function showArrivalModal(info) {
   const opts = document.getElementById("modal-options");
   opts.innerHTML = "";
   for (let i = 1; i <= info.num; i++) {
-    const label = document.createElement("label");
-    label.className = "modal-radio";
-    label.innerHTML = `<input type="radio" name="arrival" value="${i}" ${i === info.current ? "checked" : ""}> ${labels[i] || `#${i}`}`;
-    opts.appendChild(label);
+    const lbl = document.createElement("label");
+    lbl.className = "modal-radio";
+    lbl.innerHTML = `<input type="radio" name="arrival" value="${i}" ${i === info.current ? "checked" : ""}> ${labels[i] || `#${i}`}`;
+    opts.appendChild(lbl);
   }
 
   document.getElementById("modal-overlay").classList.remove("hidden");
+  document.getElementById("modal-confirm").style.display = "";
+  document.getElementById("modal-cancel").textContent = "Cancel";
 
   document.getElementById("modal-confirm").onclick = async () => {
     const sel = document.querySelector('input[name="arrival"]:checked');
     if (!sel) return;
     closeModal();
-    const resp = await apiPost("/api/set_arrival", { new_pos: +sel.value });
+    const resp = await apiPost(gameUrl("set_arrival"), { new_pos: +sel.value });
     const result = resp.action_result || {};
-    G = resp;
-    render(G);
+    G = resp; render(G);
     if (result.message) showMsg(result.message, "success");
   };
   document.getElementById("modal-cancel").onclick = async () => {
     closeModal();
-    G = await apiPost("/api/cancel");
+    G = await apiPost(gameUrl("cancel"));
     render(G);
   };
 }
@@ -416,21 +524,18 @@ function showScoresModal(state) {
 
   document.getElementById("modal-title").textContent = "Current Scores";
   document.getElementById("modal-sub").textContent = "";
-
-  const opts = document.getElementById("modal-options");
-  opts.innerHTML = `
-    <div style="margin-bottom:14px">
+  document.getElementById("modal-options").innerHTML = `
+    <div style="margin-bottom:12px">
       ${ranked.map(([name, pts]) =>
         `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2a1a4a">
           <span>${name}</span>
           <strong style="color:${pts >= 0 ? "#80FF80" : "#FF8080"}">${pts >= 0 ? "+" : ""}${pts} pts</strong>
-        </div>`
-      ).join("")}
+        </div>`).join("")}
     </div>
-    <div style="font-size:.8rem;color:#CCAAFF;font-weight:700;margin-bottom:6px">Breakdown:</div>
+    <div style="font-size:.78rem;color:#CCAAFF;font-weight:700;margin-bottom:5px">Breakdown:</div>
     ${arrivals.map(r => {
       const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+1, 2nd+2" : "3rd −1";
-      return `<div style="font-size:.78rem;color:#CCCCFF;padding:2px 0">
+      return `<div style="font-size:.76rem;color:#CCCCFF;padding:2px 0">
         Day ${r.day} – ${r.location}: ${r.players.join(" → ")} [${note}]
       </div>`;
     }).join("")}`;
@@ -438,22 +543,18 @@ function showScoresModal(state) {
   document.getElementById("modal-overlay").classList.remove("hidden");
   document.getElementById("modal-confirm").style.display = "none";
   document.getElementById("modal-cancel").textContent = "Close";
-  document.getElementById("modal-cancel").onclick = () => {
-    closeModal();
-    document.getElementById("modal-confirm").style.display = "";
-    document.getElementById("modal-cancel").textContent = "Cancel";
-  };
+  document.getElementById("modal-cancel").onclick = closeModal;
 }
 
 function closeModal() {
   document.getElementById("modal-overlay").classList.add("hidden");
 }
 
-/* ── END ─────────────────────────────────────────────────────────────────── */
+/* ══ END SCREEN ═════════════════════════════════════════════════════════════ */
 function endHTML(state) {
-  const scores  = state.scores || {};
-  const ranked  = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const medals  = ["🥇", "🥈", "🥉"];
+  const scores   = state.scores || {};
+  const ranked   = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const medals   = ["🥇", "🥈", "🥉"];
   const arrivals = state.arrivals_display || [];
 
   return `
@@ -462,19 +563,18 @@ function endHTML(state) {
   <div class="podium">
     ${ranked.map(([name, pts], i) => `
       <div class="podium-row ${i === 0 ? "rank-1" : ""}">
-        <span class="podium-medal">${medals[i] || `#${i + 1}`}</span>
+        <span class="podium-medal">${medals[i] || `#${i+1}`}</span>
         <span class="podium-name">${name}</span>
         <span class="podium-score">${pts >= 0 ? "+" : ""}${pts} pts</span>
       </div>`).join("")}
   </div>
-
   <div class="breakdown">
     <h3>Date Results</h3>
     ${arrivals.map(r => {
       let note, cls;
-      if (r.n === 1)      { note = "solo — no points";            cls = "neutral"; }
-      else if (r.n === 2) { note = "1st: +1 pt,  2nd: +2 pts";   cls = "good"; }
-      else                { note = "3rd wheel: −1 pt";             cls = "bad"; }
+      if (r.n === 1)      { note = "solo — no points";          cls = "neutral"; }
+      else if (r.n === 2) { note = "1st: +1 pt,  2nd: +2 pts"; cls = "good"; }
+      else                { note = "3rd wheel: −1 pt";           cls = "bad"; }
       return `<div class="breakdown-row">
         <span class="bday">Day ${r.day}</span>
         <span class="bloc">${r.location}</span>
@@ -483,30 +583,12 @@ function endHTML(state) {
       </div>`;
     }).join("")}
   </div>
-
   <button id="play-again" class="btn btn-primary">▶ Play Again</button>
 </div>`;
 }
 
 function bindEnd() {
-  document.getElementById("play-again").addEventListener("click", async () => {
-    G = await apiPost("/api/reset");
-    render(G);
-  });
-}
-
-/* ── bind all events for current phase ───────────────────────────────────── */
-function bindAll(state) {
-  if      (state.phase === "setup")       bindSetup();
-  else if (state.phase === "arrangement") bindArrange(state);
-  else if (state.phase === "game")        bindGame(state);
-  else if (state.phase === "end")         bindEnd();
-
-  // modal overlay close on bg click (only for scores modal)
-  document.getElementById("modal-overlay").addEventListener("click", e => {
-    if (e.target === document.getElementById("modal-overlay")) {
-      const cancelBtn = document.getElementById("modal-cancel");
-      if (cancelBtn) cancelBtn.click();
-    }
+  document.getElementById("play-again").addEventListener("click", () => {
+    window.location.href = "/";
   });
 }

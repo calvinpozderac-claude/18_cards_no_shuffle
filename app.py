@@ -1,7 +1,11 @@
-from flask import Flask, session, request, jsonify, render_template
+import uuid
+from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
-app.secret_key = "dtbtw-flask-secret-2024"
+app.secret_key = "dtbtw-multi-secret-2024"
+
+# In-memory game store: game_id -> {"state": {...}, "tokens": [t0, t1, t2]}
+GAMES = {}
 
 LOCATION_NAMES = {
     1: "Coffee Shop",
@@ -13,15 +17,15 @@ LOCATION_NAMES = {
 }
 
 CARD_ABILITIES = {
-    1: "Flip one of another player's face-up cards face down",
+    1: "Flip an opponent's face-up card face down",
     2: "Flip one of your own face-up cards face down",
-    3: "Swap the day slot of two of another player's cards",
-    4: "Swap the day slot of two of your own cards",
+    3: "Swap the day slots of 2 of another player's cards",
+    4: "Swap the day slots of 2 of your own cards",
     5: "Change the arrival order of an opponent's face-up card",
     6: "Change the arrival order of one of your own face-up cards",
 }
 
-# ── game logic (operates on plain dicts stored in session) ────────────────────
+# ── game logic (operates on plain dicts) ─────────────────────────────────────
 
 def _card_at(player, day):
     return player["cards"][day - 1] if 1 <= day <= 6 else None
@@ -32,8 +36,7 @@ def _key(day, ct):
 
 
 def _renumber(state, day, ct):
-    arr = state["arrivals"].get(_key(day, ct), [])
-    for i, pidx in enumerate(arr):
+    for i, pidx in enumerate(state["arrivals"].get(_key(day, ct), [])):
         _card_at(state["players"][pidx], day)["arrival"] = i + 1
 
 
@@ -80,7 +83,6 @@ def _swap_days(state, pidx, day1, day2):
         player["cards"][day2 - 1],
         player["cards"][day1 - 1],
     )
-    # c1 is now at day2, c2 is now at day1
     for day, card in [(day1, c2), (day2, c1)]:
         if card["face_up"]:
             k = _key(day, card["card_type"])
@@ -144,11 +146,11 @@ def _calculate_scores(state):
 
 def _arrivals_display(state):
     rows = []
-    for k, arr in sorted(state["arrivals"].items(), key=lambda x: [int(v) for v in x[0].split(",")]):
+    for k, arr in sorted(state["arrivals"].items(),
+                         key=lambda x: [int(v) for v in x[0].split(",")]):
         day, ct = (int(v) for v in k.split(","))
         rows.append({
-            "day": day,
-            "card_type": ct,
+            "day": day, "card_type": ct,
             "location": LOCATION_NAMES[ct],
             "players": [state["players"][pi]["name"] for pi in arr],
             "n": len(arr),
@@ -156,120 +158,186 @@ def _arrivals_display(state):
     return rows
 
 
-def _enrich(state):
-    s = dict(state)
-    s["location_names"] = LOCATION_NAMES
-    s["card_abilities"] = CARD_ABILITIES
-    if state["phase"] in ("game", "end"):
-        s["scores"] = _calculate_scores(state)
-        s["arrivals_display"] = _arrivals_display(state)
-    return s
-
-
-def _new_state():
+def _new_state(player_names):
     return {
-        "phase": "setup",
-        "players": [],
+        "phase": "arrangement",
+        "players": [{"name": n, "cards": [], "arranged": False} for n in player_names],
         "current_player_idx": 0,
         "turn_count": 0,
         "arrivals": {},
         "pending_action": None,
         "action_ctx": {},
         "action_message": None,
-        "arrange_idx": 0,
         "game_over": False,
     }
 
 
-def _gs():
-    if "game" not in session:
-        session["game"] = _new_state()
-    return session["game"]
+def _state_for_player(game, my_pidx):
+    """Return state with other players' face-down card types hidden."""
+    state = game["state"]
+    players_out = []
+    for i, player in enumerate(state["players"]):
+        p = {
+            "name": player["name"],
+            "arranged": player["arranged"],
+            "is_me": i == my_pidx,
+            "cards": [],
+        }
+        for c in player["cards"]:
+            if i == my_pidx or c["face_up"]:
+                p["cards"].append(dict(c))
+            else:
+                # Hidden: show only that a face-down card exists
+                p["cards"].append({"card_type": None, "face_up": False, "arrival": 0})
+        players_out.append(p)
+
+    out = {
+        "phase": state["phase"],
+        "players": players_out,
+        "my_player_idx": my_pidx,
+        "current_player_idx": state["current_player_idx"],
+        "turn_count": state["turn_count"],
+        "arrivals": state["arrivals"],
+        "pending_action": state["pending_action"],
+        "action_ctx": state["action_ctx"],
+        "action_message": state["action_message"],
+        "game_over": state["game_over"],
+        "location_names": LOCATION_NAMES,
+        "card_abilities": CARD_ABILITIES,
+        "num_players": len(state["players"]),
+    }
+    if state["phase"] in ("game", "end"):
+        out["scores"] = _calculate_scores(state)
+        out["arrivals_display"] = _arrivals_display(state)
+    return out
 
 
-def _save(state):
-    session["game"] = state
-    session.modified = True
+def _get_pidx(game, token):
+    try:
+        return game["tokens"].index(token)
+    except ValueError:
+        return None
 
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", game_id=None, token=None, player_idx=None)
 
 
-@app.route("/api/state")
-def api_state():
-    return jsonify(_enrich(_gs()))
+@app.route("/game/<game_id>/<token>")
+def game_page(game_id, token):
+    if game_id not in GAMES:
+        return "Game not found. Ask the host to share a new link.", 404
+    game = GAMES[game_id]
+    pidx = _get_pidx(game, token)
+    if pidx is None:
+        return "Invalid player token.", 403
+    return render_template(
+        "index.html",
+        game_id=game_id,
+        token=token,
+        player_idx=pidx,
+        player_name=game["state"]["players"][pidx]["name"],
+    )
 
 
-@app.route("/api/setup", methods=["POST"])
-def api_setup():
+# ── setup (no game context) ───────────────────────────────────────────────────
+
+@app.route("/api/create", methods=["POST"])
+def api_create():
     data = request.json
-    state = _new_state()
     n = max(2, min(3, int(data.get("num_players", 3))))
     names = data.get("names", [])
+    player_names = []
     for i in range(n):
         raw = names[i] if i < len(names) else ""
-        name = str(raw).strip() or f"Player {i + 1}"
-        state["players"].append({"name": name, "cards": []})
-    state["phase"] = "arrangement"
-    state["arrange_idx"] = 0
-    _save(state)
-    return jsonify(_enrich(state))
+        player_names.append(str(raw).strip() or f"Player {i + 1}")
+
+    game_id = uuid.uuid4().hex[:10]
+    tokens = [uuid.uuid4().hex for _ in range(n)]
+    GAMES[game_id] = {
+        "state": _new_state(player_names),
+        "tokens": tokens,
+    }
+    return jsonify({
+        "game_id": game_id,
+        "tokens": tokens,
+        "player_names": player_names,
+    })
 
 
-@app.route("/api/arrange", methods=["POST"])
-def api_arrange():
-    data = request.json
-    state = _gs()
+# ── player-scoped endpoints ───────────────────────────────────────────────────
+
+def _resolve(game_id, token):
+    """Return (game, pidx) or raise."""
+    game = GAMES.get(game_id)
+    if not game:
+        return None, None
+    pidx = _get_pidx(game, token)
+    return game, pidx
+
+
+@app.route("/api/game/<game_id>/<token>/state")
+def api_state(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_state_for_player(game, pidx))
+
+
+@app.route("/api/game/<game_id>/<token>/arrange", methods=["POST"])
+def api_arrange(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     if state["phase"] != "arrangement":
         return jsonify({"error": "Not in arrangement phase"}), 400
-    pidx = state["arrange_idx"]
-    arrangement = data.get("arrangement", {})  # {"card_type": day, ...}
+    if state["players"][pidx]["arranged"]:
+        return jsonify({"error": "Already arranged"}), 400
+
+    arrangement = request.json.get("arrangement", {})  # {ct_str: day}
     cards = [None] * 6
     for ct_str, day in arrangement.items():
         ct, d = int(ct_str), int(day)
         cards[d - 1] = {"card_type": ct, "face_up": False, "arrival": 0}
     state["players"][pidx]["cards"] = cards
-    state["arrange_idx"] += 1
-    if state["arrange_idx"] >= len(state["players"]):
+    state["players"][pidx]["arranged"] = True
+
+    if all(p["arranged"] for p in state["players"]):
         state["phase"] = "game"
-    _save(state)
-    return jsonify(_enrich(state))
+
+    return jsonify(_state_for_player(game, pidx))
 
 
-@app.route("/api/flip", methods=["POST"])
-def api_flip():
-    data = request.json
-    state = _gs()
+@app.route("/api/game/<game_id>/<token>/flip", methods=["POST"])
+def api_flip(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     if state["phase"] != "game":
         return jsonify({"error": "Not in game phase"}), 400
     if state["pending_action"]:
         return jsonify({"error": "Resolve pending action first"}), 400
+    if pidx != state["current_player_idx"]:
+        return jsonify({"error": "Not your turn"}), 400
 
-    day = int(data.get("day"))
-    pidx = state["current_player_idx"]
+    day = int(request.json.get("day"))
     player = state["players"][pidx]
     card = _card_at(player, day)
-
     if not card or card["face_up"]:
         return jsonify({"error": "Cannot flip that card"}), 400
 
     _flip_up(state, pidx, day)
     ct = card["card_type"]
-
-    # Determine ability
     pending, msg = None, None
 
     if ct == 1:
-        if any(
-            c["face_up"]
-            for pi, p in enumerate(state["players"])
-            if pi != pidx
-            for c in p["cards"]
-        ):
+        if any(c["face_up"] for pi, p in enumerate(state["players"])
+               if pi != pidx for c in p["cards"]):
             pending = "flip_other_down"
             msg = f"Card 1 – {LOCATION_NAMES[1]}: Click an opponent's face-up card to flip it face down."
 
@@ -314,20 +382,24 @@ def api_flip():
         state["action_message"] = None
         _advance_turn(state)
 
-    _save(state)
-    return jsonify(_enrich(state))
+    return jsonify(_state_for_player(game, pidx))
 
 
-@app.route("/api/action", methods=["POST"])
-def api_action():
-    data = request.json
-    state = _gs()
+@app.route("/api/game/<game_id>/<token>/action", methods=["POST"])
+def api_action(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     if state["phase"] != "game" or not state["pending_action"]:
         return jsonify({"error": "No pending action"}), 400
+    if pidx != state["current_player_idx"]:
+        return jsonify({"error": "Not your turn"}), 400
 
     action = state["pending_action"]
     ctx = state["action_ctx"]
     actor = ctx["actor"]
+    data = request.json
     tpi = int(data.get("player_idx", -1))
     tday = int(data.get("day", -1))
 
@@ -370,7 +442,7 @@ def api_action():
             state["pending_action"] = "swap_other_2"
             state["action_message"] = (
                 f"Selected {state['players'][tpi]['name']}'s Day {tday}. "
-                f"Now click a second card from the same player."
+                "Now click a second card from the same player."
             )
 
     elif action == "swap_other_2":
@@ -419,13 +491,13 @@ def api_action():
                 k = _key(tday, card["card_type"])
                 arr = state["arrivals"].get(k, [])
                 if len(arr) < 2:
-                    err = "Only one player at that date — no arrival order to change."
+                    err = "Only one player there — no arrival order to change."
                 else:
                     ctx["target_pi"] = tpi
                     ctx["target_day"] = tday
                     state["pending_action"] = "set_arrival"
                     state["action_message"] = (
-                        f"Select the new arrival position for "
+                        f"Select new arrival position for "
                         f"{state['players'][tpi]['name']}'s "
                         f"{LOCATION_NAMES[card['card_type']]} on Day {tday}."
                     )
@@ -444,11 +516,9 @@ def api_action():
         state["action_message"] = None
         _advance_turn(state)
 
-    _save(state)
-    resp = _enrich(state)
+    resp = _state_for_player(game, pidx)
     resp["action_result"] = {
-        "error": err,
-        "done": done,
+        "error": err, "done": done,
         "needs_position": needs_pos,
         "arrival_info": arrival_info,
         "message": success_msg,
@@ -456,51 +526,53 @@ def api_action():
     return jsonify(resp)
 
 
-@app.route("/api/set_arrival", methods=["POST"])
-def api_set_arrival():
-    data = request.json
-    state = _gs()
+@app.route("/api/game/<game_id>/<token>/set_arrival", methods=["POST"])
+def api_set_arrival(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     if state["pending_action"] != "set_arrival":
         return jsonify({"error": "No arrival to set"}), 400
     ctx = state["action_ctx"]
-    new_pos = int(data.get("new_pos", 1))
+    new_pos = int(request.json.get("new_pos", 1))
     _change_arrival(state, ctx["target_pi"], ctx["target_day"], new_pos)
     card = _card_at(state["players"][ctx["target_pi"]], ctx["target_day"])
-    msg = f"Changed {state['players'][ctx['target_pi']]['name']}'s {LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!"
+    msg = (
+        f"Changed {state['players'][ctx['target_pi']]['name']}'s "
+        f"{LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!"
+    )
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
     _advance_turn(state)
-    _save(state)
-    resp = _enrich(state)
+    resp = _state_for_player(game, pidx)
     resp["action_result"] = {"error": None, "done": True, "message": msg}
     return jsonify(resp)
 
 
-@app.route("/api/cancel", methods=["POST"])
-def api_cancel():
-    state = _gs()
+@app.route("/api/game/<game_id>/<token>/cancel", methods=["POST"])
+def api_cancel(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
     _advance_turn(state)
-    _save(state)
-    return jsonify(_enrich(state))
+    return jsonify(_state_for_player(game, pidx))
 
 
-@app.route("/api/end_game", methods=["POST"])
-def api_end_game():
-    state = _gs()
+@app.route("/api/game/<game_id>/<token>/end_game", methods=["POST"])
+def api_end_game(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
     state["phase"] = "end"
     state["game_over"] = True
-    _save(state)
-    return jsonify(_enrich(state))
-
-
-@app.route("/api/reset", methods=["POST"])
-def api_reset():
-    session.pop("game", None)
-    return jsonify(_enrich(_new_state()))
+    return jsonify(_state_for_player(game, pidx))
 
 
 if __name__ == "__main__":
