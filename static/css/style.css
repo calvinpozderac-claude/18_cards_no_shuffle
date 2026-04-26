@@ -192,6 +192,13 @@ body {
 .board-player-label.is-active { color: #FFD700; }
 .board-player-label.is-me.is-active { color: #FFD700; }
 
+.ai-badge {
+  display: inline-block; margin-left: 5px;
+  font-size: .65rem; font-weight: 700; padding: 2px 5px; border-radius: 4px;
+  background: #2a1a5e; color: #BB99FF; vertical-align: middle;
+  letter-spacing: .03em;
+}
+
 /* ── CARD ─────────────────────────────────────────────────────────────────── */
 .card {
   border-radius: 8px; border: 2px solid transparent;

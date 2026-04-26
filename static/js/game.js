@@ -100,22 +100,58 @@ function renderSetup() {
 
   <div class="setup-form">
     <div class="form-group">
-      <label>Number of Players</label>
+      <label>Game Mode</label>
       <div class="radio-group">
-        <label><input type="radio" name="np" value="2"> 2 Players</label>
-        <label><input type="radio" name="np" value="3" checked> 3 Players</label>
+        <label><input type="radio" name="mode" value="multi" checked> Multiplayer</label>
+        <label><input type="radio" name="mode" value="ai"> 1 Player vs 2 AI Bots</label>
       </div>
     </div>
-    <div class="form-group">
-      <label>Player Names</label>
-      <div class="name-fields">
-        ${[1,2,3].map(i => `
-          <div class="player-name-row" id="nr${i}">
-            <span class="pnum">P${i}</span>
-            <input class="player-name-input" id="pn${i}" value="Player ${i}" />
-          </div>`).join("")}
+
+    <div id="multi-opts">
+      <div class="form-group">
+        <label>Number of Players</label>
+        <div class="radio-group">
+          <label><input type="radio" name="np" value="2"> 2 Players</label>
+          <label><input type="radio" name="np" value="3" checked> 3 Players</label>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Player Names</label>
+        <div class="name-fields">
+          ${[1,2,3].map(i => `
+            <div class="player-name-row" id="nr${i}">
+              <span class="pnum">P${i}</span>
+              <input class="player-name-input" id="pn${i}" value="Player ${i}" />
+            </div>`).join("")}
+        </div>
       </div>
     </div>
+
+    <div id="ai-opts" style="display:none">
+      <div class="form-group">
+        <label>Your Name</label>
+        <div class="name-fields">
+          <div class="player-name-row">
+            <span class="pnum">You</span>
+            <input class="player-name-input" id="ai-name" value="Player 1" />
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>AI Difficulty</label>
+        <div class="radio-group" style="flex-direction:column;gap:10px">
+          <label style="display:flex;flex-direction:column;gap:2px">
+            <span><input type="radio" name="diff" value="random" checked> Random Bots</span>
+            <span style="font-size:.8rem;color:#9980cc;margin-left:20px">Flip cards and use abilities completely at random</span>
+          </label>
+          <label style="display:flex;flex-direction:column;gap:2px">
+            <span><input type="radio" name="diff" value="basic"> Strategic Bots</span>
+            <span style="font-size:.8rem;color:#9980cc;margin-left:20px">Aim for 2nd arrival, avoid the third-wheel penalty, and disrupt your best dates</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
     <button id="create-btn" class="btn btn-primary">Create Game →</button>
   </div>
 
@@ -137,6 +173,12 @@ function renderSetup() {
   </div>
 </div>`;
 
+  document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener("change", () => {
+    const isAI = document.querySelector('input[name="mode"]:checked').value === "ai";
+    document.getElementById("multi-opts").style.display = isAI ? "none" : "";
+    document.getElementById("ai-opts").style.display   = isAI ? ""     : "none";
+  }));
+
   const updateRows = () => {
     const n = +document.querySelector('input[name="np"]:checked').value;
     document.getElementById("nr3").style.display = n >= 3 ? "" : "none";
@@ -145,10 +187,20 @@ function renderSetup() {
   updateRows();
 
   document.getElementById("create-btn").addEventListener("click", async () => {
-    const n = +document.querySelector('input[name="np"]:checked').value;
-    const names = [1,2,3].map(i => document.getElementById(`pn${i}`).value.trim());
-    const res = await apiPost("/api/create", { num_players: n, names });
-    renderLobby(res);
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    if (mode === "ai") {
+      const humanName = document.getElementById("ai-name").value.trim() || "Player 1";
+      const diff = document.querySelector('input[name="diff"]:checked').value;
+      const res = await apiPost("/api/create", {
+        vs_ai: true, human_name: humanName, ai_difficulty: diff,
+      });
+      window.location.href = res.player_url;
+    } else {
+      const n = +document.querySelector('input[name="np"]:checked').value;
+      const names = [1,2,3].map(i => document.getElementById(`pn${i}`).value.trim());
+      const res = await apiPost("/api/create", { num_players: n, names });
+      renderLobby(res);
+    }
   });
 }
 
@@ -343,10 +395,12 @@ function gameHTML(state) {
 function boardRowHTML(state, pi, player) {
   const isMe = pi === MY_IDX;
   const isActive = pi === state.current_player_idx;
+  const isAI = (state.ai_players || []).includes(pi);
   const labelCls = [isMe ? "is-me" : "", isActive ? "is-active" : ""].filter(Boolean).join(" ");
+  const aiTag = isAI ? ` <span class="ai-badge">${state.ai_difficulty === "basic" ? "🤖 Strategic" : "🎲 Random"}</span>` : "";
   return `
     <div class="board-player-label ${labelCls}">
-      ${isActive ? "▶ " : ""}${player.name}${isMe ? " (you)" : ""}
+      ${isActive ? "▶ " : ""}${player.name}${isMe ? " (you)" : ""}${aiTag}
     </div>
     ${player.cards.map((card, di) => cardHTML(state, pi, di + 1, card)).join("")}`;
 }

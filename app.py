@@ -1,10 +1,10 @@
 import uuid
+import random
 from flask import Flask, request, jsonify, render_template
 
 app = Flask(__name__)
-app.secret_key = "dtbtw-multi-secret-2024"
+app.secret_key = "dtbtw-ai-secret-2024"
 
-# In-memory game store: game_id -> {"state": {...}, "tokens": [t0, t1, t2]}
 GAMES = {}
 
 LOCATION_NAMES = {
@@ -25,20 +25,17 @@ CARD_ABILITIES = {
     6: "Change the arrival order of one of your own face-up cards",
 }
 
-# ── game logic (operates on plain dicts) ─────────────────────────────────────
+# ── core game logic ───────────────────────────────────────────────────────────
 
 def _card_at(player, day):
     return player["cards"][day - 1] if 1 <= day <= 6 else None
 
-
 def _key(day, ct):
     return f"{day},{ct}"
-
 
 def _renumber(state, day, ct):
     for i, pidx in enumerate(state["arrivals"].get(_key(day, ct), [])):
         _card_at(state["players"][pidx], day)["arrival"] = i + 1
-
 
 def _flip_up(state, pidx, day):
     card = _card_at(state["players"][pidx], day)
@@ -49,7 +46,6 @@ def _flip_up(state, pidx, day):
     state["arrivals"].setdefault(k, []).append(pidx)
     card["arrival"] = len(state["arrivals"][k])
     return True
-
 
 def _flip_down(state, pidx, day):
     card = _card_at(state["players"][pidx], day)
@@ -65,7 +61,6 @@ def _flip_down(state, pidx, day):
     card["arrival"] = 0
     return True
 
-
 def _swap_days(state, pidx, day1, day2):
     player = state["players"][pidx]
     c1, c2 = _card_at(player, day1), _card_at(player, day2)
@@ -80,8 +75,7 @@ def _swap_days(state, pidx, day1, day2):
                 state["arrivals"][k] = arr
                 _renumber(state, day, card["card_type"])
     player["cards"][day1 - 1], player["cards"][day2 - 1] = (
-        player["cards"][day2 - 1],
-        player["cards"][day1 - 1],
+        player["cards"][day2 - 1], player["cards"][day1 - 1],
     )
     for day, card in [(day1, c2), (day2, c1)]:
         if card["face_up"]:
@@ -89,7 +83,6 @@ def _swap_days(state, pidx, day1, day2):
             state["arrivals"].setdefault(k, []).append(pidx)
             card["arrival"] = len(state["arrivals"][k])
     return True
-
 
 def _change_arrival(state, pidx, day, new_pos):
     card = _card_at(state["players"][pidx], day)
@@ -106,13 +99,11 @@ def _change_arrival(state, pidx, day, new_pos):
     _renumber(state, day, card["card_type"])
     return True
 
-
 def _check_game_over(state):
     if all(c["face_up"] for p in state["players"] for c in p["cards"]):
         state["game_over"] = True
         state["phase"] = "end"
     return state["game_over"]
-
 
 def _advance_turn(state):
     n = len(state["players"])
@@ -131,7 +122,6 @@ def _advance_turn(state):
         if _check_game_over(state):
             return
 
-
 def _calculate_scores(state):
     scores = {p["name"]: 0 for p in state["players"]}
     for k, arr in state["arrivals"].items():
@@ -142,7 +132,6 @@ def _calculate_scores(state):
         elif n >= 3:
             scores[state["players"][arr[2]]["name"]] -= 1
     return scores
-
 
 def _arrivals_display(state):
     rows = []
@@ -157,7 +146,6 @@ def _arrivals_display(state):
         })
     return rows
 
-
 def _new_state(player_names):
     return {
         "phase": "arrangement",
@@ -169,28 +157,22 @@ def _new_state(player_names):
         "action_ctx": {},
         "action_message": None,
         "game_over": False,
+        "ai_players": [],
+        "ai_difficulty": None,
     }
 
-
 def _state_for_player(game, my_pidx):
-    """Return state with other players' face-down card types hidden."""
     state = game["state"]
     players_out = []
     for i, player in enumerate(state["players"]):
-        p = {
-            "name": player["name"],
-            "arranged": player["arranged"],
-            "is_me": i == my_pidx,
-            "cards": [],
-        }
+        p = {"name": player["name"], "arranged": player["arranged"],
+             "is_me": i == my_pidx, "cards": []}
         for c in player["cards"]:
             if i == my_pidx or c["face_up"]:
                 p["cards"].append(dict(c))
             else:
-                # Hidden: show only that a face-down card exists
                 p["cards"].append({"card_type": None, "face_up": False, "arrival": 0})
         players_out.append(p)
-
     out = {
         "phase": state["phase"],
         "players": players_out,
@@ -202,15 +184,14 @@ def _state_for_player(game, my_pidx):
         "action_ctx": state["action_ctx"],
         "action_message": state["action_message"],
         "game_over": state["game_over"],
-        "location_names": LOCATION_NAMES,
-        "card_abilities": CARD_ABILITIES,
         "num_players": len(state["players"]),
+        "ai_players": state.get("ai_players", []),
+        "ai_difficulty": state.get("ai_difficulty"),
     }
     if state["phase"] in ("game", "end"):
         out["scores"] = _calculate_scores(state)
         out["arrivals_display"] = _arrivals_display(state)
     return out
-
 
 def _get_pidx(game, token):
     try:
@@ -218,13 +199,235 @@ def _get_pidx(game, token):
     except ValueError:
         return None
 
+# ── AI logic ──────────────────────────────────────────────────────────────────
+
+def _ai_arrange():
+    """Random card-to-day assignment."""
+    days = list(range(1, 7))
+    random.shuffle(days)
+    return {ct: days[ct - 1] for ct in range(1, 7)}
+
+
+def _ai_pick_flip(state, pidx, difficulty):
+    """Choose a face-down card to flip. Returns day number."""
+    player = state["players"][pidx]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    if not candidates:
+        return None
+    if difficulty == "random":
+        return random.choice(candidates)
+
+    # Basic: prefer 2nd arrival (+2 pts), then avoid 3rd (−1 pt)
+    second = [d for d in candidates
+              if len(state["arrivals"].get(_key(d, _card_at(player, d)["card_type"]), [])) == 1]
+    if second:
+        return random.choice(second)
+
+    safe = [d for d in candidates
+            if len(state["arrivals"].get(_key(d, _card_at(player, d)["card_type"]), [])) < 2]
+    return random.choice(safe) if safe else random.choice(candidates)
+
+
+def _ai_flip_other_target(state, pidx, difficulty):
+    """Card 1: pick which opponent face-up card to flip down. Returns (tpi, tday)."""
+    targets = [
+        (pi, d + 1, c)
+        for pi, p in enumerate(state["players"]) if pi != pidx
+        for d, c in enumerate(p["cards"]) if c["face_up"]
+    ]
+    if not targets:
+        return None, None
+    if difficulty == "random":
+        t = random.choice(targets)
+        return t[0], t[1]
+
+    # Basic: target the opponent scoring the most (2nd arrival = +2)
+    best, best_val = None, -1
+    for tpi, tday, card in targets:
+        k = _key(tday, card["card_type"])
+        arr = state["arrivals"].get(k, [])
+        val = {(2, 2): 2, (2, 1): 1}.get((len(arr), card["arrival"]), 0)
+        if val > best_val:
+            best_val, best = val, (tpi, tday)
+    return best or (targets[0][0], targets[0][1])
+
+
+def _ai_flip_own_target(state, pidx, difficulty):
+    """Card 2: pick which of own face-up cards to flip down. Returns tday."""
+    targets = [d + 1 for d, c in enumerate(state["players"][pidx]["cards"]) if c["face_up"]]
+    if not targets:
+        return None
+    if difficulty == "random":
+        return random.choice(targets)
+
+    # Basic: escape 3rd-wheel (-1) first, then 1st arrival on a solo day
+    player = state["players"][pidx]
+    for d, c in enumerate(player["cards"]):
+        if c["face_up"] and c["arrival"] == 3:
+            return d + 1
+    for d, c in enumerate(player["cards"]):
+        if c["face_up"] and c["arrival"] == 1:
+            if len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) == 1:
+                return d + 1
+    return random.choice(targets)
+
+
+def _ai_swap_other_targets(state, pidx, difficulty):
+    """Card 3: pick two of an opponent's cards to swap. Returns (tpi, day1, day2)."""
+    opponents = [pi for pi in range(len(state["players"])) if pi != pidx]
+    if not opponents:
+        return None, None, None
+    tpi = random.choice(opponents)
+    days = random.sample(range(1, 7), 2)
+    return tpi, days[0], days[1]
+
+
+def _ai_swap_own_targets(state, pidx, difficulty):
+    """Card 4: pick two of own cards to swap. Returns (day1, day2)."""
+    if difficulty == "random":
+        return random.sample(range(1, 7), 2)
+
+    # Basic: try to put a face-down card onto a day where an opponent has the same type
+    player = state["players"][pidx]
+    for d, c in enumerate(player["cards"]):
+        if c["face_up"]:
+            continue
+        ct, my_day = c["card_type"], d + 1
+        for pi, p in enumerate(state["players"]):
+            if pi == pidx:
+                continue
+            for d2, c2 in enumerate(p["cards"]):
+                target_day = d2 + 1
+                if c2["face_up"] and c2["card_type"] == ct and target_day != my_day:
+                    # Swap my_day with whatever is at target_day in my hand
+                    return my_day, target_day
+    return random.sample(range(1, 7), 2)
+
+
+def _ai_change_arr_other_target(state, pidx, difficulty):
+    """Card 5: pick opponent card + new arrival position. Returns (tpi, tday, new_pos)."""
+    candidates = [
+        (pi, d + 1, c, state["arrivals"].get(_key(d + 1, c["card_type"]), []))
+        for pi, p in enumerate(state["players"]) if pi != pidx
+        for d, c in enumerate(p["cards"])
+        if c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
+    ]
+    if not candidates:
+        return None, None, None
+    if difficulty == "random":
+        tpi, tday, card, arr = random.choice(candidates)
+        return tpi, tday, random.randint(1, len(arr))
+
+    # Basic: make opponent 3rd wheel if possible; otherwise knock 2nd to 1st
+    best, best_gain = None, 0
+    for tpi, tday, card, arr in candidates:
+        n = len(arr)
+        if n == 3 and card["arrival"] < 3:
+            if 3 > best_gain:
+                best_gain, best = 3, (tpi, tday, 3)
+        elif n == 2 and card["arrival"] == 2:
+            gain = 2 if (pidx in arr and arr[0] == pidx) else 1
+            if gain > best_gain:
+                best_gain, best = gain, (tpi, tday, 1)
+    if best:
+        return best
+    tpi, tday, _, arr = random.choice(candidates)
+    return tpi, tday, 1
+
+
+def _ai_change_arr_own_target(state, pidx, difficulty):
+    """Card 6: pick own card + new arrival position. Returns (tday, new_pos)."""
+    player = state["players"][pidx]
+    candidates = [
+        (d + 1, c, state["arrivals"].get(_key(d + 1, c["card_type"]), []))
+        for d, c in enumerate(player["cards"])
+        if c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
+    ]
+    if not candidates:
+        return None, None
+    if difficulty == "random":
+        tday, card, arr = random.choice(candidates)
+        return tday, random.randint(1, len(arr))
+
+    # Basic: move to 2nd position (best score on a 2-player day)
+    for tday, card, arr in candidates:
+        if len(arr) >= 2 and card["arrival"] != 2:
+            return tday, min(2, len(arr))
+    tday, _, arr = random.choice(candidates)
+    return tday, min(2, len(arr))
+
+
+def _ai_take_turn(game):
+    """Execute one complete AI turn: flip + resolve ability in one shot."""
+    state = game["state"]
+    pidx = state["current_player_idx"]
+    difficulty = state.get("ai_difficulty", "random")
+    player = state["players"][pidx]
+
+    day = _ai_pick_flip(state, pidx, difficulty)
+    if day is None:
+        _advance_turn(state)
+        return
+
+    _flip_up(state, pidx, day)
+    ct = player["cards"][day - 1]["card_type"]
+
+    if ct == 1:
+        tpi, tday = _ai_flip_other_target(state, pidx, difficulty)
+        if tpi is not None:
+            _flip_down(state, tpi, tday)
+
+    elif ct == 2:
+        tday = _ai_flip_own_target(state, pidx, difficulty)
+        if tday is not None:
+            _flip_down(state, pidx, tday)
+
+    elif ct == 3:
+        tpi, d1, d2 = _ai_swap_other_targets(state, pidx, difficulty)
+        if tpi is not None:
+            _swap_days(state, tpi, d1, d2)
+
+    elif ct == 4:
+        d1, d2 = _ai_swap_own_targets(state, pidx, difficulty)
+        if d1 is not None and d1 != d2:
+            _swap_days(state, pidx, d1, d2)
+
+    elif ct == 5:
+        tpi, tday, new_pos = _ai_change_arr_other_target(state, pidx, difficulty)
+        if tpi is not None:
+            _change_arrival(state, tpi, tday, new_pos)
+
+    elif ct == 6:
+        tday, new_pos = _ai_change_arr_own_target(state, pidx, difficulty)
+        if tday is not None:
+            _change_arrival(state, pidx, tday, new_pos)
+
+    _advance_turn(state)
+
+
+def _process_ai_turns(game):
+    """Auto-play all consecutive AI turns until a human's turn or game over."""
+    state = game["state"]
+    ai_set = set(state.get("ai_players", []))
+    if not ai_set:
+        return
+    limit = 20
+    i = 0
+    while (
+        state["phase"] == "game"
+        and state["current_player_idx"] in ai_set
+        and not state["pending_action"]
+        and i < limit
+    ):
+        _ai_take_turn(game)
+        i += 1
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    return render_template("index.html", game_id=None, token=None, player_idx=None)
-
+    return render_template("index.html", game_id=None, token=None,
+                           player_idx=None, player_name=None)
 
 @app.route("/game/<game_id>/<token>")
 def game_page(game_id, token):
@@ -236,48 +439,63 @@ def game_page(game_id, token):
         return "Invalid player token.", 403
     return render_template(
         "index.html",
-        game_id=game_id,
-        token=token,
+        game_id=game_id, token=token,
         player_idx=pidx,
         player_name=game["state"]["players"][pidx]["name"],
     )
 
-
-# ── setup (no game context) ───────────────────────────────────────────────────
-
 @app.route("/api/create", methods=["POST"])
 def api_create():
     data = request.json
-    n = max(2, min(3, int(data.get("num_players", 3))))
-    names = data.get("names", [])
-    player_names = []
-    for i in range(n):
-        raw = names[i] if i < len(names) else ""
-        player_names.append(str(raw).strip() or f"Player {i + 1}")
+    vs_ai = data.get("vs_ai", False)
 
-    game_id = uuid.uuid4().hex[:10]
-    tokens = [uuid.uuid4().hex for _ in range(n)]
-    GAMES[game_id] = {
-        "state": _new_state(player_names),
-        "tokens": tokens,
-    }
-    return jsonify({
-        "game_id": game_id,
-        "tokens": tokens,
-        "player_names": player_names,
-    })
+    if vs_ai:
+        human_name = str(data.get("human_name", "Player 1")).strip() or "Player 1"
+        difficulty = data.get("ai_difficulty", "random")
+        label = "Random" if difficulty == "random" else "Strategic"
+        player_names = [human_name, f"Bot ({label})", f"Bot ({label})"]
 
+        game_id = uuid.uuid4().hex[:10]
+        tokens = [uuid.uuid4().hex for _ in range(3)]
+        state = _new_state(player_names)
+        state["ai_players"] = [1, 2]
+        state["ai_difficulty"] = difficulty
 
-# ── player-scoped endpoints ───────────────────────────────────────────────────
+        # Pre-arrange both AI players
+        for ai_pidx in [1, 2]:
+            cards = [None] * 6
+            for ct, day in _ai_arrange().items():
+                cards[day - 1] = {"card_type": ct, "face_up": False, "arrival": 0}
+            state["players"][ai_pidx]["cards"] = cards
+            state["players"][ai_pidx]["arranged"] = True
+
+        GAMES[game_id] = {"state": state, "tokens": tokens}
+        return jsonify({
+            "vs_ai": True,
+            "player_url": f"/game/{game_id}/{tokens[0]}",
+        })
+    else:
+        n = max(2, min(3, int(data.get("num_players", 3))))
+        names = data.get("names", [])
+        player_names = [
+            (str(names[i]).strip() if i < len(names) else "") or f"Player {i + 1}"
+            for i in range(n)
+        ]
+        game_id = uuid.uuid4().hex[:10]
+        tokens = [uuid.uuid4().hex for _ in range(n)]
+        GAMES[game_id] = {"state": _new_state(player_names), "tokens": tokens}
+        return jsonify({
+            "vs_ai": False,
+            "game_id": game_id,
+            "tokens": tokens,
+            "player_names": player_names,
+        })
 
 def _resolve(game_id, token):
-    """Return (game, pidx) or raise."""
     game = GAMES.get(game_id)
     if not game:
         return None, None
-    pidx = _get_pidx(game, token)
-    return game, pidx
-
+    return game, _get_pidx(game, token)
 
 @app.route("/api/game/<game_id>/<token>/state")
 def api_state(game_id, token):
@@ -286,31 +504,22 @@ def api_state(game_id, token):
         return jsonify({"error": "not found"}), 404
     return jsonify(_state_for_player(game, pidx))
 
-
 @app.route("/api/game/<game_id>/<token>/arrange", methods=["POST"])
 def api_arrange(game_id, token):
     game, pidx = _resolve(game_id, token)
     if game is None or pidx is None:
         return jsonify({"error": "not found"}), 404
     state = game["state"]
-    if state["phase"] != "arrangement":
-        return jsonify({"error": "Not in arrangement phase"}), 400
-    if state["players"][pidx]["arranged"]:
-        return jsonify({"error": "Already arranged"}), 400
-
-    arrangement = request.json.get("arrangement", {})  # {ct_str: day}
+    if state["phase"] != "arrangement" or state["players"][pidx]["arranged"]:
+        return jsonify({"error": "Cannot arrange now"}), 400
     cards = [None] * 6
-    for ct_str, day in arrangement.items():
-        ct, d = int(ct_str), int(day)
-        cards[d - 1] = {"card_type": ct, "face_up": False, "arrival": 0}
+    for ct_str, day in request.json.get("arrangement", {}).items():
+        cards[int(day) - 1] = {"card_type": int(ct_str), "face_up": False, "arrival": 0}
     state["players"][pidx]["cards"] = cards
     state["players"][pidx]["arranged"] = True
-
     if all(p["arranged"] for p in state["players"]):
         state["phase"] = "game"
-
     return jsonify(_state_for_player(game, pidx))
-
 
 @app.route("/api/game/<game_id>/<token>/flip", methods=["POST"])
 def api_flip(game_id, token):
@@ -318,10 +527,8 @@ def api_flip(game_id, token):
     if game is None or pidx is None:
         return jsonify({"error": "not found"}), 404
     state = game["state"]
-    if state["phase"] != "game":
-        return jsonify({"error": "Not in game phase"}), 400
-    if state["pending_action"]:
-        return jsonify({"error": "Resolve pending action first"}), 400
+    if state["phase"] != "game" or state["pending_action"]:
+        return jsonify({"error": "Cannot flip now"}), 400
     if pidx != state["current_player_idx"]:
         return jsonify({"error": "Not your turn"}), 400
 
@@ -340,33 +547,27 @@ def api_flip(game_id, token):
                if pi != pidx for c in p["cards"]):
             pending = "flip_other_down"
             msg = f"Card 1 – {LOCATION_NAMES[1]}: Click an opponent's face-up card to flip it face down."
-
     elif ct == 2:
         if any(c["face_up"] for c in player["cards"]):
             pending = "flip_own_down"
             msg = f"Card 2 – {LOCATION_NAMES[2]}: Click one of your face-up cards to flip it face down."
-
     elif ct == 3:
         pending = "swap_other_1"
         msg = f"Card 3 – {LOCATION_NAMES[3]}: Click another player's card — first of two to swap days."
-
     elif ct == 4:
         pending = "swap_own_1"
         msg = f"Card 4 – {LOCATION_NAMES[4]}: Click one of your cards — first of two to swap days."
-
     elif ct == 5:
         if any(
-            c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
-            for pi, p in enumerate(state["players"])
-            if pi != pidx
+            c["face_up"] and len(state["arrivals"].get(_key(d+1, c["card_type"]), [])) >= 2
+            for pi, p in enumerate(state["players"]) if pi != pidx
             for d, c in enumerate(p["cards"])
         ):
             pending = "change_arr_other"
             msg = f"Card 5 – {LOCATION_NAMES[5]}: Click an opponent's face-up card to change its arrival order."
-
     elif ct == 6:
         if any(
-            c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
+            c["face_up"] and len(state["arrivals"].get(_key(d+1, c["card_type"]), [])) >= 2
             for d, c in enumerate(player["cards"])
         ):
             pending = "change_arr_own"
@@ -377,13 +578,10 @@ def api_flip(game_id, token):
         state["action_ctx"] = {"actor": pidx}
         state["action_message"] = msg
     else:
-        state["pending_action"] = None
-        state["action_ctx"] = {}
-        state["action_message"] = None
         _advance_turn(state)
+        _process_ai_turns(game)
 
     return jsonify(_state_for_player(game, pidx))
-
 
 @app.route("/api/game/<game_id>/<token>/action", methods=["POST"])
 def api_action(game_id, token):
@@ -403,11 +601,7 @@ def api_action(game_id, token):
     tpi = int(data.get("player_idx", -1))
     tday = int(data.get("day", -1))
 
-    err = None
-    done = False
-    needs_pos = False
-    arrival_info = None
-    success_msg = None
+    err, done, needs_pos, arrival_info, success_msg = None, False, False, None, None
 
     if action == "flip_other_down":
         if tpi == actor:
@@ -505,8 +699,7 @@ def api_action(game_id, token):
                     arrival_info = {
                         "player_name": state["players"][tpi]["name"],
                         "location": LOCATION_NAMES[card["card_type"]],
-                        "day": tday,
-                        "current": card["arrival"],
+                        "day": tday, "current": card["arrival"],
                         "num": len(arr),
                     }
 
@@ -515,16 +708,15 @@ def api_action(game_id, token):
         state["action_ctx"] = {}
         state["action_message"] = None
         _advance_turn(state)
+        _process_ai_turns(game)
 
     resp = _state_for_player(game, pidx)
     resp["action_result"] = {
         "error": err, "done": done,
-        "needs_position": needs_pos,
-        "arrival_info": arrival_info,
+        "needs_position": needs_pos, "arrival_info": arrival_info,
         "message": success_msg,
     }
     return jsonify(resp)
-
 
 @app.route("/api/game/<game_id>/<token>/set_arrival", methods=["POST"])
 def api_set_arrival(game_id, token):
@@ -538,18 +730,16 @@ def api_set_arrival(game_id, token):
     new_pos = int(request.json.get("new_pos", 1))
     _change_arrival(state, ctx["target_pi"], ctx["target_day"], new_pos)
     card = _card_at(state["players"][ctx["target_pi"]], ctx["target_day"])
-    msg = (
-        f"Changed {state['players'][ctx['target_pi']]['name']}'s "
-        f"{LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!"
-    )
+    msg = (f"Changed {state['players'][ctx['target_pi']]['name']}'s "
+           f"{LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!")
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
     _advance_turn(state)
+    _process_ai_turns(game)
     resp = _state_for_player(game, pidx)
     resp["action_result"] = {"error": None, "done": True, "message": msg}
     return jsonify(resp)
-
 
 @app.route("/api/game/<game_id>/<token>/cancel", methods=["POST"])
 def api_cancel(game_id, token):
@@ -561,19 +751,17 @@ def api_cancel(game_id, token):
     state["action_ctx"] = {}
     state["action_message"] = None
     _advance_turn(state)
+    _process_ai_turns(game)
     return jsonify(_state_for_player(game, pidx))
-
 
 @app.route("/api/game/<game_id>/<token>/end_game", methods=["POST"])
 def api_end_game(game_id, token):
     game, pidx = _resolve(game_id, token)
     if game is None or pidx is None:
         return jsonify({"error": "not found"}), 404
-    state = game["state"]
-    state["phase"] = "end"
-    state["game_over"] = True
+    game["state"]["phase"] = "end"
+    game["state"]["game_over"] = True
     return jsonify(_state_for_player(game, pidx))
-
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
