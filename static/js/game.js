@@ -23,7 +23,7 @@ let lastRenderKey = null;  // avoid thrashing on unchanged state
 let msgTimer = null;
 
 function renderKey(s) {
-  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}`;
+  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}`;
 }
 
 /* ── entry ───────────────────────────────────────────────────────────────── */
@@ -389,6 +389,16 @@ function gameHTML(state) {
       } pts</span>`
     ).join("")}
   </div>
+  <div class="move-log-panel">
+    <div class="move-log-title">Move Log</div>
+    <div class="move-log-list">
+      ${(state.move_log || []).length === 0
+        ? '<div class="log-entry log-empty">No moves yet.</div>'
+        : (state.move_log || []).map(e =>
+            `<div class="log-entry${e.startsWith("↳") ? " log-ability" : ""}">${e}</div>`
+          ).join("")}
+    </div>
+  </div>
 </div>`;
 }
 
@@ -638,6 +648,15 @@ function endHTML(state) {
     }).join("")}
   </div>
   <button id="play-again" class="btn btn-primary">▶ Play Again</button>
+  ${(state.move_log || []).length > 0 ? `
+  <div class="move-log-panel end-log">
+    <div class="move-log-title">Move Log</div>
+    <div class="move-log-list">
+      ${state.move_log.map(e =>
+          `<div class="log-entry${e.startsWith("↳") ? " log-ability" : ""}">${e}</div>`
+        ).join("")}
+    </div>
+  </div>` : ""}
 </div>`;
 }
 

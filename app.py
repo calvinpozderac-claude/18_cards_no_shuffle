@@ -157,6 +157,7 @@ def _new_state(player_names):
         "action_ctx": {},
         "action_message": None,
         "game_over": False,
+        "move_log": [],
         "ai_players": [],
         "ai_difficulty": None,
     }
@@ -187,6 +188,7 @@ def _state_for_player(game, my_pidx):
         "num_players": len(state["players"]),
         "ai_players": state.get("ai_players", []),
         "ai_difficulty": state.get("ai_difficulty"),
+        "move_log": state.get("move_log", []),
     }
     if state["phase"] in ("game", "end"):
         out["scores"] = _calculate_scores(state)
@@ -198,6 +200,11 @@ def _get_pidx(game, token):
         return game["tokens"].index(token)
     except ValueError:
         return None
+
+def _log(state, msg):
+    state.setdefault("move_log", []).insert(0, msg)
+    if len(state["move_log"]) > 100:
+        state["move_log"] = state["move_log"][:100]
 
 # ── AI logic ──────────────────────────────────────────────────────────────────
 
@@ -363,6 +370,7 @@ def _ai_take_turn(game):
     pidx = state["current_player_idx"]
     difficulty = state.get("ai_difficulty", "random")
     player = state["players"][pidx]
+    pname = player["name"]
 
     day = _ai_pick_flip(state, pidx, difficulty)
     if day is None:
@@ -371,36 +379,52 @@ def _ai_take_turn(game):
 
     _flip_up(state, pidx, day)
     ct = player["cards"][day - 1]["card_type"]
+    arr_label = {1: "1st", 2: "2nd", 3: "3rd"}.get(player["cards"][day - 1]["arrival"], f"#{player['cards'][day - 1]['arrival']}")
+    _log(state, f"{pname} flipped {LOCATION_NAMES[ct]} on Day {day} — {arr_label} to arrive")
 
     if ct == 1:
         tpi, tday = _ai_flip_other_target(state, pidx, difficulty)
         if tpi is not None:
+            tcard = _card_at(state["players"][tpi], tday)
+            tct = tcard["card_type"] if tcard else ct
             _flip_down(state, tpi, tday)
+            _log(state, f"↳ {pname} used Coffee Shop: flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[tct]} (Day {tday}) face down")
 
     elif ct == 2:
         tday = _ai_flip_own_target(state, pidx, difficulty)
         if tday is not None:
+            tcard = _card_at(player, tday)
+            tct = tcard["card_type"] if tcard else ct
             _flip_down(state, pidx, tday)
+            _log(state, f"↳ {pname} used Park: flipped own {LOCATION_NAMES[tct]} (Day {tday}) face down")
 
     elif ct == 3:
         tpi, d1, d2 = _ai_swap_other_targets(state, pidx, difficulty)
         if tpi is not None:
             _swap_days(state, tpi, d1, d2)
+            _log(state, f"↳ {pname} used Cinema: swapped {state['players'][tpi]['name']}'s Day {d1} ↔ Day {d2}")
 
     elif ct == 4:
         d1, d2 = _ai_swap_own_targets(state, pidx, difficulty)
         if d1 is not None and d1 != d2:
             _swap_days(state, pidx, d1, d2)
+            _log(state, f"↳ {pname} used Restaurant: swapped own Day {d1} ↔ Day {d2}")
 
     elif ct == 5:
         tpi, tday, new_pos = _ai_change_arr_other_target(state, pidx, difficulty)
         if tpi is not None:
+            tcard = _card_at(state["players"][tpi], tday)
+            tct = tcard["card_type"] if tcard else ct
             _change_arrival(state, tpi, tday, new_pos)
+            _log(state, f"↳ {pname} used Beach: {state['players'][tpi]['name']}'s {LOCATION_NAMES[tct]} arrival → #{new_pos}")
 
     elif ct == 6:
         tday, new_pos = _ai_change_arr_own_target(state, pidx, difficulty)
         if tday is not None:
+            tcard = _card_at(player, tday)
+            tct = tcard["card_type"] if tcard else ct
             _change_arrival(state, pidx, tday, new_pos)
+            _log(state, f"↳ {pname} used Museum: own {LOCATION_NAMES[tct]} arrival → #{new_pos}")
 
     _advance_turn(state)
 
@@ -453,7 +477,7 @@ def api_create():
         human_name = str(data.get("human_name", "Player 1")).strip() or "Player 1"
         difficulty = data.get("ai_difficulty", "random")
         label = "Random" if difficulty == "random" else "Strategic"
-        player_names = [human_name, f"Bot ({label})", f"Bot ({label})"]
+        player_names = [human_name, f"Bot 1 ({label})", f"Bot 2 ({label})"]
 
         game_id = uuid.uuid4().hex[:10]
         tokens = [uuid.uuid4().hex for _ in range(3)]
@@ -540,6 +564,8 @@ def api_flip(game_id, token):
 
     _flip_up(state, pidx, day)
     ct = card["card_type"]
+    arr_label = {1: "1st", 2: "2nd", 3: "3rd"}.get(card["arrival"], f"#{card['arrival']}")
+    _log(state, f"{player['name']} flipped {LOCATION_NAMES[ct]} on Day {day} — {arr_label} to arrive")
     pending, msg = None, None
 
     if ct == 1:
@@ -613,6 +639,7 @@ def api_action(game_id, token):
             else:
                 _flip_down(state, tpi, tday)
                 success_msg = f"Flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
+                _log(state, f"↳ {state['players'][actor]['name']} used Coffee Shop: flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down")
                 done = True
 
     elif action == "flip_own_down":
@@ -625,6 +652,7 @@ def api_action(game_id, token):
             else:
                 _flip_down(state, tpi, tday)
                 success_msg = f"Flipped your {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
+                _log(state, f"↳ {state['players'][actor]['name']} used Park: flipped own {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down")
                 done = True
 
     elif action == "swap_other_1":
@@ -649,6 +677,7 @@ def api_action(game_id, token):
         else:
             _swap_days(state, tpi, ctx["first_day"], tday)
             success_msg = f"Swapped {state['players'][tpi]['name']}'s Day {ctx['first_day']} and Day {tday}!"
+            _log(state, f"↳ {state['players'][actor]['name']} used Cinema: swapped {state['players'][tpi]['name']}'s Day {ctx['first_day']} ↔ Day {tday}")
             done = True
 
     elif action == "swap_own_1":
@@ -669,6 +698,7 @@ def api_action(game_id, token):
         else:
             _swap_days(state, actor, ctx["first_day"], tday)
             success_msg = f"Swapped your Day {ctx['first_day']} and Day {tday}!"
+            _log(state, f"↳ {state['players'][actor]['name']} used Restaurant: swapped own Day {ctx['first_day']} ↔ Day {tday}")
             done = True
 
     elif action in ("change_arr_other", "change_arr_own"):
@@ -687,6 +717,7 @@ def api_action(game_id, token):
                 if len(arr) < 2:
                     err = "Only one player there — no arrival order to change."
                 else:
+                    ctx["ability"] = "Beach" if action == "change_arr_other" else "Museum"
                     ctx["target_pi"] = tpi
                     ctx["target_day"] = tday
                     state["pending_action"] = "set_arrival"
@@ -730,6 +761,10 @@ def api_set_arrival(game_id, token):
     new_pos = int(request.json.get("new_pos", 1))
     _change_arrival(state, ctx["target_pi"], ctx["target_day"], new_pos)
     card = _card_at(state["players"][ctx["target_pi"]], ctx["target_day"])
+    ability_name = ctx.get("ability", "Beach/Museum")
+    actor_pidx = ctx.get("actor")
+    actor_name_log = state["players"][actor_pidx]["name"] if actor_pidx is not None else "?"
+    _log(state, f"↳ {actor_name_log} used {ability_name}: {state['players'][ctx['target_pi']]['name']}'s {LOCATION_NAMES[card['card_type']]} arrival → #{new_pos}")
     msg = (f"Changed {state['players'][ctx['target_pi']]['name']}'s "
            f"{LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!")
     state["pending_action"] = None
@@ -747,6 +782,7 @@ def api_cancel(game_id, token):
     if game is None or pidx is None:
         return jsonify({"error": "not found"}), 404
     state = game["state"]
+    _log(state, f"{state['players'][pidx]['name']} skipped their ability")
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
