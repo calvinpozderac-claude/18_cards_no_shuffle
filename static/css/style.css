@@ -380,3 +380,6 @@ body {
   margin-top: 20px; border: 1px solid #2a1a4a; border-radius: 8px; overflow: hidden;
 }
 .end-log .move-log-list { max-height: 200px; }
+
+/* Restaurant hot-location glow (face-up ct-4 cards) */
+.card.face-up.ct-4 { box-shadow: 0 0 8px #FF990055; }

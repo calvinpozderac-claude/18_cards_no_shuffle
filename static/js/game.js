@@ -1,3 +1,13 @@
+/* ── per-card scoring text (Rules 2, 3, 4) ──────────────────────────────── */
+const CARD_SCORING = {
+  1: "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1",
+  2: "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1",
+  3: "2♥ 1st+2 · 2nd+1<br>3♥ 3rd−1",
+  4: "2♥ 1st+4 · 2nd+2<br>3♥ 3rd−2 🔥",
+  5: "2♥ 1st+3 · 2nd+3<br>3♥ 3rd−2 · solo−1",
+  6: "2♥ 1st+1 · 2nd+1<br>3♥ no penalty",
+};
+
 /* ── api ─────────────────────────────────────────────────────────────────── */
 async function apiGet(url) {
   const r = await fetch(url);
@@ -166,9 +176,14 @@ function renderSetup() {
     </div>
     <div class="rules-box">
       <h3>Scoring</h3>
-      <div class="rule-row">2 players same card/day → 1st: +1 pt,  2nd: +2 pts</div>
-      <div class="rule-row">3 players same card/day → 1st: 0,  2nd: 0,  3rd (third wheel!): −1 pt</div>
-      <div class="rule-row">1 player alone on a day → no points</div>
+      ${Object.entries(CARD_SCORING).map(([ct, sc]) => `
+        <div class="rule-row">
+          <span class="card-badge ct-${ct}">${ct}</span>
+          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${sc.replace(/<br>/g, " / ")}
+        </div>`).join("")}
+      <div class="rule-row" style="margin-top:6px;color:#FFCCAA">
+        Alone at Beach → −1 pt (solo penalty)
+      </div>
     </div>
   </div>
 </div>`;
@@ -480,7 +495,7 @@ function cardHTML(state, pi, day, card) {
   </div>
   <hr class="card-divider"/>
   <div class="card-ability">${CARD_ABILITIES[ct]}</div>
-  <div class="card-scoring">2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1</div>
+  <div class="card-scoring">${CARD_SCORING[ct] || "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1"}</div>
 </button>`;
   }
 
@@ -497,7 +512,7 @@ function cardHTML(state, pi, day, card) {
   ${card.arrival ? `<div class="card-arrival">${arrLabel[card.arrival] || `#${card.arrival}`}</div>` : ""}
   <hr class="card-divider"/>
   <div class="card-ability">${CARD_ABILITIES[ct]}</div>
-  <div class="card-scoring">2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1</div>
+  <div class="card-scoring">${CARD_SCORING[ct] || "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1"}</div>
 </button>`;
 }
 
@@ -635,10 +650,19 @@ function endHTML(state) {
   <div class="breakdown">
     <h3>Date Results</h3>
     ${arrivals.map(r => {
+      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[4,2,-2],5:[3,3,-2],6:[1,1,0]})[r.card_type] || [1,2,-1];
       let note, cls;
-      if (r.n === 1)      { note = "solo — no points";          cls = "neutral"; }
-      else if (r.n === 2) { note = "1st: +1 pt,  2nd: +2 pts"; cls = "good"; }
-      else                { note = "3rd wheel: −1 pt";           cls = "bad"; }
+      if (r.n === 1) {
+        const solo = r.card_type === 5;
+        note = solo ? "solo — −1 pt (Beach penalty)" : "solo — no points";
+        cls  = solo ? "bad" : "neutral";
+      } else if (r.n === 2) {
+        note = `1st: ${pts[0]>=0?"+":""}${pts[0]} · 2nd: ${pts[1]>=0?"+":""}${pts[1]}`;
+        cls  = "good";
+      } else {
+        note = `3rd wheel: ${pts[2]}`;
+        cls  = "bad";
+      }
       return `<div class="breakdown-row">
         <span class="bday">Day ${r.day}</span>
         <span class="bloc">${r.location}</span>

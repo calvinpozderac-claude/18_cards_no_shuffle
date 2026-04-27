@@ -25,6 +25,19 @@ CARD_ABILITIES = {
     6: "Change the arrival order of one of your own face-up cards",
 }
 
+# Rule 2: per-card-type point distributions (1st-arrival pts, 2nd, 3rd)
+# Rule 3 (1 location): arriving alone at Beach costs −1
+# Rule 4: Restaurant points doubled
+CARD_PTS = {
+    1: (1, 2, -1),   # Coffee Shop  — late arrival best
+    2: (1, 2, -1),   # Park         — late arrival best
+    3: (2, 1, -1),   # Cinema       — early arrival best
+    4: (4, 2, -2),   # Restaurant   — early arrival best, big swings (R2 × R4)
+    5: (3, 3, -2),   # Beach        — 1st = 2nd, third wheel brutal
+    6: (1, 1,  0),   # Museum       — flat, no third-wheel penalty
+}
+SOLO_PENALTY_CT = 5   # Beach: −1 for arriving alone
+
 # ── core game logic ───────────────────────────────────────────────────────────
 
 def _card_at(player, day):
@@ -126,11 +139,15 @@ def _calculate_scores(state):
     scores = {p["name"]: 0 for p in state["players"]}
     for k, arr in state["arrivals"].items():
         n = len(arr)
-        if n == 2:
-            scores[state["players"][arr[0]]["name"]] += 1
-            scores[state["players"][arr[1]]["name"]] += 2
-        elif n >= 3:
-            scores[state["players"][arr[2]]["name"]] -= 1
+        _, ct = (int(v) for v in k.split(","))
+        pts = CARD_PTS[ct]
+        if n == 1:
+            if ct == SOLO_PENALTY_CT:
+                scores[state["players"][arr[0]]["name"]] -= 1
+        elif n >= 2:
+            for i, pidx in enumerate(arr[:3]):
+                if i < len(pts):
+                    scores[state["players"][pidx]["name"]] += pts[i]
     return scores
 
 def _arrivals_display(state):
@@ -224,15 +241,41 @@ def _ai_pick_flip(state, pidx, difficulty):
     if difficulty == "random":
         return random.choice(candidates)
 
-    # Basic: prefer 2nd arrival (+2 pts), then avoid 3rd (−1 pt)
-    second = [d for d in candidates
-              if len(state["arrivals"].get(_key(d, _card_at(player, d)["card_type"]), [])) == 1]
-    if second:
-        return random.choice(second)
+    def ct(d): return _card_at(player, d)["card_type"]
+    def n_arr(d): return len(state["arrivals"].get(_key(d, ct(d)), []))
 
-    safe = [d for d in candidates
-            if len(state["arrivals"].get(_key(d, _card_at(player, d)["card_type"]), [])) < 2]
-    return random.choice(safe) if safe else random.choice(candidates)
+    # Hard-veto: would become 3rd at cards with pts[2] ≤ −2 (Restaurant, Beach)
+    non_veto = [d for d in candidates if not (n_arr(d) >= 2 and CARD_PTS[ct(d)][2] <= -2)]
+    pool = non_veto if non_veto else candidates
+
+    # Avoid going solo at Beach (−1 solo penalty) if better options exist
+    non_solo_beach = [d for d in pool if not (n_arr(d) == 0 and ct(d) == SOLO_PENALTY_CT)]
+    safe_pool = non_solo_beach if non_solo_beach else pool
+
+    # Priority 1: Beach 2nd arrival (+3, equal to 1st but no solo risk)
+    beach_2nd = [d for d in pool if ct(d) == 5 and n_arr(d) == 1]
+    if beach_2nd: return random.choice(beach_2nd)
+
+    # Priority 2: Restaurant 1st arrival (+4, best single position in game)
+    rest_1st = [d for d in pool if ct(d) == 4 and n_arr(d) == 0]
+    if rest_1st: return random.choice(rest_1st)
+
+    # Priority 3: Restaurant 2nd arrival (+2)
+    rest_2nd = [d for d in pool if ct(d) == 4 and n_arr(d) == 1]
+    if rest_2nd: return random.choice(rest_2nd)
+
+    # Priority 4: Cinema 1st (+2) or Coffee Shop/Park 2nd (+2)
+    good = [d for d in safe_pool
+            if (ct(d) == 3 and n_arr(d) == 0) or (ct(d) in (1, 2) and n_arr(d) == 1)]
+    if good: return random.choice(good)
+
+    # Priority 5: any 2nd arrival (safe positive score)
+    second = [d for d in safe_pool if n_arr(d) == 1]
+    if second: return random.choice(second)
+
+    # Priority 6: any 1st arrival, avoiding solo Beach
+    safe = [d for d in safe_pool if n_arr(d) == 0]
+    return random.choice(safe) if safe else random.choice(pool)
 
 
 def _ai_flip_other_target(state, pidx, difficulty):
@@ -248,14 +291,17 @@ def _ai_flip_other_target(state, pidx, difficulty):
         t = random.choice(targets)
         return t[0], t[1]
 
-    # Basic: target the opponent scoring the most (2nd arrival = +2)
-    best, best_val = None, -1
+    # Basic: target the opponent face-up card currently earning the most points
+    best, best_val = None, -999
     for tpi, tday, card in targets:
-        k = _key(tday, card["card_type"])
-        arr = state["arrivals"].get(k, [])
-        val = {(2, 2): 2, (2, 1): 1}.get((len(arr), card["arrival"]), 0)
-        if val > best_val:
-            best_val, best = val, (tpi, tday)
+        ct = card["card_type"]
+        n = len(state["arrivals"].get(_key(tday, ct), []))
+        pts = CARD_PTS[ct]
+        cur_val = pts[card["arrival"] - 1] if 0 <= card["arrival"] - 1 < len(pts) else 0
+        if n == 1 and ct == SOLO_PENALTY_CT:
+            cur_val = -1  # already penalised — not worth targeting
+        if cur_val > best_val:
+            best_val, best = cur_val, (tpi, tday)
     return best or (targets[0][0], targets[0][1])
 
 
@@ -267,15 +313,22 @@ def _ai_flip_own_target(state, pidx, difficulty):
     if difficulty == "random":
         return random.choice(targets)
 
-    # Basic: escape 3rd-wheel (-1) first, then 1st arrival on a solo day
+    # Basic: flip own card with the worst current point value (escape bad positions)
     player = state["players"][pidx]
-    for d, c in enumerate(player["cards"]):
-        if c["face_up"] and c["arrival"] == 3:
-            return d + 1
-    for d, c in enumerate(player["cards"]):
-        if c["face_up"] and c["arrival"] == 1:
-            if len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) == 1:
-                return d + 1
+    scored = []
+    for d in targets:
+        c = _card_at(player, d)
+        ct = c["card_type"]
+        n = len(state["arrivals"].get(_key(d, ct), []))
+        pts = CARD_PTS[ct]
+        val = pts[c["arrival"] - 1] if 0 <= c["arrival"] - 1 < len(pts) else 0
+        if n == 1 and ct == SOLO_PENALTY_CT:
+            val = -1
+        scored.append((val, d))
+    scored.sort()
+    worst_val = scored[0][0]
+    if worst_val < 1:
+        return random.choice([d for v, d in scored if v == worst_val])
     return random.choice(targets)
 
 
@@ -325,21 +378,21 @@ def _ai_change_arr_other_target(state, pidx, difficulty):
         tpi, tday, card, arr = random.choice(candidates)
         return tpi, tday, random.randint(1, len(arr))
 
-    # Basic: make opponent 3rd wheel if possible; otherwise knock 2nd to 1st
-    best, best_gain = None, 0
+    # Basic: maximise point swing — push opponent to the worst position available
+    best, best_swing = None, -1
     for tpi, tday, card, arr in candidates:
         n = len(arr)
-        if n == 3 and card["arrival"] < 3:
-            if 3 > best_gain:
-                best_gain, best = 3, (tpi, tday, 3)
-        elif n == 2 and card["arrival"] == 2:
-            gain = 2 if (pidx in arr and arr[0] == pidx) else 1
-            if gain > best_gain:
-                best_gain, best = gain, (tpi, tday, 1)
+        ct = card["card_type"]
+        pts = CARD_PTS[ct]
+        cur_pts = pts[card["arrival"] - 1] if 0 <= card["arrival"] - 1 < len(pts) else 0
+        worst_pts = pts[n - 1] if n - 1 < len(pts) else 0
+        swing = cur_pts - worst_pts
+        if swing > best_swing and n != card["arrival"]:
+            best_swing, best = swing, (tpi, tday, n)
     if best:
         return best
     tpi, tday, _, arr = random.choice(candidates)
-    return tpi, tday, 1
+    return tpi, tday, len(arr)
 
 
 def _ai_change_arr_own_target(state, pidx, difficulty):
@@ -356,10 +409,21 @@ def _ai_change_arr_own_target(state, pidx, difficulty):
         tday, card, arr = random.choice(candidates)
         return tday, random.randint(1, len(arr))
 
-    # Basic: move to 2nd position (best score on a 2-player day)
+    # Basic: move to the position that maximises point gain for this card type
+    best, best_gain = None, -1
     for tday, card, arr in candidates:
-        if len(arr) >= 2 and card["arrival"] != 2:
-            return tday, min(2, len(arr))
+        n = len(arr)
+        ct = card["card_type"]
+        pts = CARD_PTS[ct]
+        cur_pts = pts[card["arrival"] - 1] if 0 <= card["arrival"] - 1 < len(pts) else 0
+        # Best reachable position (can only swap within existing arrivals, not add new)
+        best_pos_pts = max(pts[i] for i in range(min(n, len(pts))))
+        best_pos = list(pts).index(best_pos_pts) + 1
+        gain = best_pos_pts - cur_pts
+        if gain > best_gain:
+            best_gain, best = gain, (tday, min(best_pos, n))
+    if best and best_gain > 0:
+        return best
     tday, _, arr = random.choice(candidates)
     return tday, min(2, len(arr))
 
