@@ -273,6 +273,28 @@ def _rollout_take_turn(state):
     _advance_turn(state)
 
 
+def _determinize_state(state, observing_pidx):
+    """Return a deep copy of state with opponents' face-down card types randomized.
+
+    Each opponent's unknown card types (those not yet face-up) are shuffled and
+    redistributed across their face-down slots, so each rollout samples a
+    different world consistent with what the observing player can see.
+    """
+    s = copy.deepcopy(state)
+    for pi, player in enumerate(s["players"]):
+        if pi == observing_pidx:
+            continue
+        known = {c["card_type"] for c in player["cards"] if c["face_up"]}
+        hidden_slots = [i for i, c in enumerate(player["cards"]) if not c["face_up"]]
+        if not hidden_slots:
+            continue
+        unknown_types = [t for t in range(1, 7) if t not in known]
+        random.shuffle(unknown_types)
+        for slot_i, card_i in enumerate(hidden_slots):
+            player["cards"][card_i]["card_type"] = unknown_types[slot_i]
+    return s
+
+
 def _mcts_flip_decision(state, pidx, rollouts):
     """Flat Monte Carlo: score each candidate flip with N random playouts. Returns best day."""
     player = state["players"][pidx]
@@ -288,7 +310,7 @@ def _mcts_flip_decision(state, pidx, rollouts):
 
     for d in candidates:
         for _ in range(n_per):
-            sim = copy.deepcopy(state)
+            sim = _determinize_state(state, pidx)
             _flip_up(sim, pidx, d)
             ct = sim["players"][pidx]["cards"][d - 1]["card_type"]
             _rollout_ability(sim, pidx, ct, "basic")
