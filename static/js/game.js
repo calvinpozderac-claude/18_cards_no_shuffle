@@ -148,16 +148,26 @@ function renderSetup() {
         </div>
       </div>
       <div class="form-group">
-        <label>AI Difficulty</label>
-        <div class="radio-group" style="flex-direction:column;gap:10px">
-          <label style="display:flex;flex-direction:column;gap:2px">
-            <span><input type="radio" name="diff" value="random" checked> Random Bots</span>
-            <span style="font-size:.8rem;color:#9980cc;margin-left:20px">Flip cards and use abilities completely at random</span>
-          </label>
-          <label style="display:flex;flex-direction:column;gap:2px">
-            <span><input type="radio" name="diff" value="basic"> Strategic Bots</span>
-            <span style="font-size:.8rem;color:#9980cc;margin-left:20px">Aim for 2nd arrival, avoid the third-wheel penalty, and disrupt your best dates</span>
-          </label>
+        <label>AI Opponents</label>
+        <div class="bot-config-list">
+          ${[1, 2].map(i => `
+          <div class="bot-config-row">
+            <span class="bot-label">Bot ${i}</span>
+            <select class="bot-type-select" id="bot-type-${i}">
+              <option value="random">🎲 Random</option>
+              <option value="basic">🤖 Strategic</option>
+              <option value="mcts">🧠 MCTS</option>
+            </select>
+            <div class="mcts-rollout-group" id="mcts-grp-${i}" style="display:none">
+              <label class="rollout-label">Rollouts</label>
+              <input type="number" class="rollout-input" id="bot-rollouts-${i}" value="50" min="1" max="500" />
+            </div>
+          </div>`).join("")}
+        </div>
+        <div class="bot-type-hints">
+          <div>🎲 <strong>Random</strong> — flips and uses abilities completely at random</div>
+          <div>🤖 <strong>Strategic</strong> — avoids penalties, targets good positions, disrupts opponents</div>
+          <div>🧠 <strong>MCTS</strong> — simulates many random game continuations to pick the best flip</div>
         </div>
       </div>
     </div>
@@ -194,6 +204,14 @@ function renderSetup() {
     document.getElementById("ai-opts").style.display   = isAI ? ""     : "none";
   }));
 
+  [1, 2].forEach(i => {
+    const sel = document.getElementById(`bot-type-${i}`);
+    if (sel) sel.addEventListener("change", () => {
+      document.getElementById(`mcts-grp-${i}`).style.display =
+        sel.value === "mcts" ? "flex" : "none";
+    });
+  });
+
   const updateRows = () => {
     const n = +document.querySelector('input[name="np"]:checked').value;
     document.getElementById("nr3").style.display = n >= 3 ? "" : "none";
@@ -205,10 +223,15 @@ function renderSetup() {
     const mode = document.querySelector('input[name="mode"]:checked').value;
     if (mode === "ai") {
       const humanName = document.getElementById("ai-name").value.trim() || "Player 1";
-      const diff = document.querySelector('input[name="diff"]:checked').value;
-      const res = await apiPost("/api/create", {
-        vs_ai: true, human_name: humanName, ai_difficulty: diff,
+      const bots = [1, 2].map(i => {
+        const type = document.getElementById(`bot-type-${i}`).value;
+        if (type === "mcts") {
+          const rollouts = Math.max(1, Math.min(500, parseInt(document.getElementById(`bot-rollouts-${i}`).value) || 50));
+          return { type: "mcts", rollouts };
+        }
+        return { type };
       });
+      const res = await apiPost("/api/create", { vs_ai: true, human_name: humanName, bots });
       window.location.href = res.player_url;
     } else {
       const n = +document.querySelector('input[name="np"]:checked').value;
@@ -422,7 +445,19 @@ function boardRowHTML(state, pi, player) {
   const isActive = pi === state.current_player_idx;
   const isAI = (state.ai_players || []).includes(pi);
   const labelCls = [isMe ? "is-me" : "", isActive ? "is-active" : ""].filter(Boolean).join(" ");
-  const aiTag = isAI ? ` <span class="ai-badge">${state.ai_difficulty === "basic" ? "🤖 Strategic" : "🎲 Random"}</span>` : "";
+  let aiTag = "";
+  if (isAI) {
+    const diffs = state.ai_difficulties || {};
+    const diff = diffs[String(pi)] || state.ai_difficulty || "random";
+    if (diff.startsWith("mcts:")) {
+      const n = diff.split(":")[1];
+      aiTag = ` <span class="ai-badge mcts-badge">🧠 MCTS-${n}</span>`;
+    } else if (diff === "basic") {
+      aiTag = ` <span class="ai-badge">🤖 Strategic</span>`;
+    } else {
+      aiTag = ` <span class="ai-badge">🎲 Random</span>`;
+    }
+  }
   return `
     <div class="board-player-label ${labelCls}">
       ${isActive ? "▶ " : ""}${player.name}${isMe ? " (you)" : ""}${aiTag}

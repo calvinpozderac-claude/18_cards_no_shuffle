@@ -1,3 +1,4 @@
+import copy
 import uuid
 import random
 from flask import Flask, request, jsonify, render_template
@@ -177,6 +178,7 @@ def _new_state(player_names):
         "move_log": [],
         "ai_players": [],
         "ai_difficulty": None,
+        "ai_difficulties": {},
     }
 
 def _state_for_player(game, my_pidx):
@@ -205,6 +207,7 @@ def _state_for_player(game, my_pidx):
         "num_players": len(state["players"]),
         "ai_players": state.get("ai_players", []),
         "ai_difficulty": state.get("ai_difficulty"),
+        "ai_difficulties": {str(k): v for k, v in state.get("ai_difficulties", {}).items()},
         "move_log": state.get("move_log", []),
     }
     if state["phase"] in ("game", "end"):
@@ -222,6 +225,82 @@ def _log(state, msg):
     state.setdefault("move_log", []).insert(0, msg)
     if len(state["move_log"]) > 100:
         state["move_log"] = state["move_log"][:100]
+
+# ── rollout helpers (no logging — used by MCTS) ───────────────────────────────
+
+def _rollout_ability(state, pidx, ct, difficulty="random"):
+    """Resolve a card ability without logging, for use in rollout simulations."""
+    if ct == 1:
+        tpi, tday = _ai_flip_other_target(state, pidx, difficulty)
+        if tpi is not None:
+            _flip_down(state, tpi, tday)
+    elif ct == 2:
+        tday = _ai_flip_own_target(state, pidx, difficulty)
+        if tday is not None:
+            _flip_down(state, pidx, tday)
+    elif ct == 3:
+        tpi, d1, d2 = _ai_swap_other_targets(state, pidx, difficulty)
+        if tpi is not None:
+            _swap_days(state, tpi, d1, d2)
+    elif ct == 4:
+        d1, d2 = _ai_swap_own_targets(state, pidx, difficulty)
+        if d1 is not None and d1 != d2:
+            _swap_days(state, pidx, d1, d2)
+    elif ct == 5:
+        tpi, tday, new_pos = _ai_change_arr_other_target(state, pidx, difficulty)
+        if tpi is not None:
+            _change_arrival(state, tpi, tday, new_pos)
+    elif ct == 6:
+        tday, new_pos = _ai_change_arr_own_target(state, pidx, difficulty)
+        if tday is not None:
+            _change_arrival(state, pidx, tday, new_pos)
+
+
+def _rollout_take_turn(state):
+    """Play one random turn in a rollout simulation (no logging)."""
+    if state["phase"] != "game":
+        return
+    pidx = state["current_player_idx"]
+    player = state["players"][pidx]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    if not candidates:
+        _advance_turn(state)
+        return
+    day = random.choice(candidates)
+    _flip_up(state, pidx, day)
+    ct = player["cards"][day - 1]["card_type"]
+    _rollout_ability(state, pidx, ct, "random")
+    _advance_turn(state)
+
+
+def _mcts_flip_decision(state, pidx, rollouts):
+    """Flat Monte Carlo: score each candidate flip with N random playouts. Returns best day."""
+    player = state["players"][pidx]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    n_per = max(1, rollouts // len(candidates))
+    totals = {d: 0.0 for d in candidates}
+    my_name = player["name"]
+
+    for d in candidates:
+        for _ in range(n_per):
+            sim = copy.deepcopy(state)
+            _flip_up(sim, pidx, d)
+            ct = sim["players"][pidx]["cards"][d - 1]["card_type"]
+            _rollout_ability(sim, pidx, ct, "basic")
+            _advance_turn(sim)
+            steps = 0
+            while sim["phase"] == "game" and steps < 30:
+                _rollout_take_turn(sim)
+                steps += 1
+            totals[d] += _calculate_scores(sim).get(my_name, 0)
+
+    return max(candidates, key=lambda d: totals[d])
+
 
 # ── AI logic ──────────────────────────────────────────────────────────────────
 
@@ -432,11 +511,20 @@ def _ai_take_turn(game):
     """Execute one complete AI turn: flip + resolve ability in one shot."""
     state = game["state"]
     pidx = state["current_player_idx"]
-    difficulty = state.get("ai_difficulty", "random")
+    ai_diffs = state.get("ai_difficulties", {})
+    diff_str = ai_diffs.get(str(pidx)) or state.get("ai_difficulty", "random") or "random"
+
+    is_mcts = diff_str.startswith("mcts:")
+    if is_mcts:
+        rollouts = int(diff_str.split(":")[1])
+        difficulty = "basic"
+    else:
+        difficulty = diff_str
+
     player = state["players"][pidx]
     pname = player["name"]
 
-    day = _ai_pick_flip(state, pidx, difficulty)
+    day = _mcts_flip_decision(state, pidx, rollouts) if is_mcts else _ai_pick_flip(state, pidx, difficulty)
     if day is None:
         _advance_turn(state)
         return
@@ -532,6 +620,12 @@ def game_page(game_id, token):
         player_name=game["state"]["players"][pidx]["name"],
     )
 
+def _bot_label(diff_str):
+    if diff_str.startswith("mcts:"):
+        return f"MCTS ({diff_str.split(':')[1]})"
+    return "Strategic" if diff_str == "basic" else "Random"
+
+
 @app.route("/api/create", methods=["POST"])
 def api_create():
     data = request.json
@@ -539,15 +633,36 @@ def api_create():
 
     if vs_ai:
         human_name = str(data.get("human_name", "Player 1")).strip() or "Player 1"
-        difficulty = data.get("ai_difficulty", "random")
-        label = "Random" if difficulty == "random" else "Strategic"
-        player_names = [human_name, f"Bot 1 ({label})", f"Bot 2 ({label})"]
+
+        bots_spec = data.get("bots")
+        if bots_spec:
+            ai_diffs = {}
+            for i, bot_info in enumerate(bots_spec[:2]):
+                ai_pidx = i + 1
+                bt = bot_info.get("type", "random")
+                if bt == "mcts":
+                    r = max(1, min(500, int(bot_info.get("rollouts", 50))))
+                    ai_diffs[str(ai_pidx)] = f"mcts:{r}"
+                elif bt == "basic":
+                    ai_diffs[str(ai_pidx)] = "basic"
+                else:
+                    ai_diffs[str(ai_pidx)] = "random"
+        else:
+            # Legacy format: ai_difficulty="random"|"basic"
+            diff = data.get("ai_difficulty", "random")
+            ai_diffs = {"1": diff, "2": diff}
+
+        player_names = [
+            human_name,
+            f"Bot 1 ({_bot_label(ai_diffs.get('1', 'random'))})",
+            f"Bot 2 ({_bot_label(ai_diffs.get('2', 'random'))})",
+        ]
 
         game_id = uuid.uuid4().hex[:10]
         tokens = [uuid.uuid4().hex for _ in range(3)]
         state = _new_state(player_names)
         state["ai_players"] = [1, 2]
-        state["ai_difficulty"] = difficulty
+        state["ai_difficulties"] = ai_diffs
 
         # Pre-arrange both AI players
         for ai_pidx in [1, 2]:

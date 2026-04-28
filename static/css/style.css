@@ -198,6 +198,35 @@ body {
   background: #2a1a5e; color: #BB99FF; vertical-align: middle;
   letter-spacing: .03em;
 }
+.ai-badge.mcts-badge { background: #0d2a40; color: #55CCFF; }
+
+/* ── per-bot config (setup screen) ──────────────────────────────────────────── */
+.bot-config-list { display: flex; flex-direction: column; gap: 10px; }
+.bot-config-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.bot-label { min-width: 38px; font-weight: 700; color: #FFD700; }
+.bot-type-select {
+  background: #1a0a3a; color: #EEE; border: 1px solid #5030A0;
+  border-radius: 5px; padding: 5px 8px; font-size: .9rem; font-family: inherit;
+  cursor: pointer;
+}
+.bot-type-select:focus { outline: none; border-color: #8040FF; }
+.mcts-rollout-group {
+  display: flex; align-items: center; gap: 7px;
+  background: #0d2a40; border: 1px solid #2255AA; border-radius: 5px;
+  padding: 4px 8px;
+}
+.rollout-label { font-size: .8rem; color: #55CCFF; font-weight: 600; }
+.rollout-input {
+  width: 58px; background: transparent; color: #EEE;
+  border: none; font-size: .9rem; font-family: inherit;
+}
+.rollout-input:focus { outline: none; }
+.bot-type-hints {
+  margin-top: 10px; font-size: .78rem; color: #9980cc;
+  display: flex; flex-direction: column; gap: 3px;
+}
 
 /* ── CARD ─────────────────────────────────────────────────────────────────── */
 .card {
