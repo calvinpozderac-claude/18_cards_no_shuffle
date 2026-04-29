@@ -26,24 +26,51 @@ function gameUrl(path) {
   return `/api/game/${GAME_ID}/${TOKEN}/${path}`;
 }
 
-/* ── state ───────────────────────────────────────────────────────────────── */
+/* ── game state ──────────────────────────────────────────────────────────── */
 let G = null;
 let pollTimer = null;
-let lastRenderKey = null;  // avoid thrashing on unchanged state
+let lastRenderKey = null;
 let msgTimer = null;
 
 function renderKey(s) {
   return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}`;
 }
 
+/* ── room state (persisted across refreshes) ─────────────────────────────── */
+let ROOM_CODE   = localStorage.getItem("dtbtw_room_code");
+let LOBBY_TOKEN = localStorage.getItem("dtbtw_lobby_token");
+let ROOM        = null;
+let roomPollTimer = null;
+let roomVersion   = -1;
+
+function saveRoom(code, token) {
+  ROOM_CODE = code; LOBBY_TOKEN = token;
+  localStorage.setItem("dtbtw_room_code", code);
+  localStorage.setItem("dtbtw_lobby_token", token);
+}
+function clearRoom() {
+  ROOM_CODE = null; LOBBY_TOKEN = null;
+  localStorage.removeItem("dtbtw_room_code");
+  localStorage.removeItem("dtbtw_lobby_token");
+}
+
 /* ── entry ───────────────────────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", async () => {
   if (GAME_ID && TOKEN) {
+    // Landed on /game/<id>/<token> — normal game flow
     G = await apiGet(gameUrl("state"));
     render(G);
     startPolling();
+  } else if (ROOM_CODE && LOBBY_TOKEN) {
+    // Reconnect to a room in progress
+    try {
+      const room = await apiGet(`/api/rooms/${ROOM_CODE}?t=${LOBBY_TOKEN}`);
+      if (room.error) { clearRoom(); renderRoomLobby(); }
+      else if (room.my_game_url) { window.location.href = room.my_game_url; }
+      else { ROOM = room; roomVersion = room.version; renderWaitingRoom(room); startRoomPolling(); }
+    } catch (_) { clearRoom(); renderRoomLobby(); }
   } else {
-    renderSetup();
+    renderRoomLobby();
   }
 });
 
@@ -65,6 +92,253 @@ function stopPolling() {
   pollTimer = null;
 }
 
+/* ── room polling ────────────────────────────────────────────────────────── */
+function startRoomPolling() {
+  if (roomPollTimer) return;
+  roomPollTimer = setInterval(async () => {
+    if (!ROOM_CODE || !LOBBY_TOKEN) return;
+    try {
+      const room = await apiGet(`/api/rooms/${ROOM_CODE}?t=${LOBBY_TOKEN}`);
+      if (room.error) { stopRoomPolling(); clearRoom(); renderRoomLobby(); return; }
+      if (room.my_game_url) { stopRoomPolling(); window.location.href = room.my_game_url; return; }
+      if (room.version !== roomVersion) {
+        ROOM = room; roomVersion = room.version; renderWaitingRoom(room);
+      }
+    } catch (_) { /* network hiccup — keep polling */ }
+  }, 2000);
+}
+function stopRoomPolling() { clearInterval(roomPollTimer); roomPollTimer = null; }
+
+/* ══ ROOM LOBBY ═════════════════════════════════════════════════════════════ */
+function renderRoomLobby() {
+  stopRoomPolling();
+  document.getElementById("app").innerHTML = `
+<div class="screen lobby-screen">
+  <h1 class="title">Don't Be the Third Wheel!</h1>
+  <p class="subtitle">Play with friends online — create a room or join one with a 3-digit code</p>
+
+  <div class="lobby-cards">
+    <div class="lobby-card">
+      <h2 class="lobby-card-title">Create a Room</h2>
+      <p class="lobby-card-desc">Generate a code and share it with your friends.</p>
+      <div class="form-group">
+        <label>Your name</label>
+        <input class="player-name-input" id="create-name" value="Player 1" />
+      </div>
+      <button id="btn-create" class="btn btn-primary" style="width:100%">Create Room →</button>
+    </div>
+
+    <div class="lobby-divider"><span>or</span></div>
+
+    <div class="lobby-card">
+      <h2 class="lobby-card-title">Join a Room</h2>
+      <p class="lobby-card-desc">Enter the 3-digit code from the room host.</p>
+      <div class="form-group">
+        <label>Room code</label>
+        <input class="room-code-input" id="join-code" placeholder="e.g. 472" maxlength="3" />
+      </div>
+      <div class="form-group">
+        <label>Your name</label>
+        <input class="player-name-input" id="join-name" value="Player 2" />
+      </div>
+      <button id="btn-join" class="btn btn-primary" style="width:100%">Join Room →</button>
+    </div>
+  </div>
+
+  <div id="lobby-err" class="lobby-err hidden"></div>
+
+  <div class="rules-grid">
+    <div class="rules-box">
+      <h3>Card Abilities</h3>
+      ${Object.entries(CARD_ABILITIES).map(([ct, ab]) => `
+        <div class="rule-row">
+          <span class="card-badge ct-${ct}">${ct}</span>
+          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${ab}
+        </div>`).join("")}
+    </div>
+    <div class="rules-box">
+      <h3>Scoring</h3>
+      ${Object.entries(CARD_SCORING).map(([ct, sc]) => `
+        <div class="rule-row">
+          <span class="card-badge ct-${ct}">${ct}</span>
+          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${sc.replace(/<br>/g, " / ")}
+        </div>`).join("")}
+      <div class="rule-row" style="margin-top:6px;color:#FFCCAA">Alone at Beach → −1 pt</div>
+    </div>
+  </div>
+</div>`;
+
+  document.getElementById("btn-create").addEventListener("click", async () => {
+    const name = document.getElementById("create-name").value.trim() || "Player 1";
+    const res = await apiPost("/api/rooms/create", { name });
+    if (res.error) { lobbyErr(res.error); return; }
+    saveRoom(res.room_code, res.lobby_token);
+    ROOM = res; roomVersion = res.version;
+    renderWaitingRoom(res); startRoomPolling();
+  });
+
+  document.getElementById("btn-join").addEventListener("click", async () => {
+    const code = document.getElementById("join-code").value.trim();
+    const name = document.getElementById("join-name").value.trim() || "Player";
+    if (!/^\d{3}$/.test(code)) { lobbyErr("Please enter a valid 3-digit room code."); return; }
+    const res = await apiPost("/api/rooms/join", { code, name });
+    if (res.error) { lobbyErr(res.error); return; }
+    saveRoom(res.room_code, res.lobby_token);
+    ROOM = res; roomVersion = res.version;
+    renderWaitingRoom(res); startRoomPolling();
+  });
+
+  document.getElementById("join-code").addEventListener("keydown", e => {
+    if (e.key === "Enter") document.getElementById("btn-join").click();
+  });
+}
+
+function lobbyErr(msg) {
+  const el = document.getElementById("lobby-err");
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("hidden"), 4000);
+}
+
+/* ══ WAITING ROOM ═══════════════════════════════════════════════════════════ */
+function renderWaitingRoom(room) {
+  const isHost  = room.is_host;
+  const players = room.players;
+  const canStart = isHost && players.length >= 2;
+  const canAddAI = isHost && players.length < 3;
+
+  const aiBadge = p => {
+    if (!p.is_ai) return "";
+    const label = {random:"🎲 Random", basic:"🤖 Strategic", mcts:"🧠 MCTS"}[p.ai_type] || "🎲 Random";
+    const extra = p.ai_type === "mcts" ? ` (${p.ai_rollouts})` : "";
+    return `<span class="ai-badge">${label}${extra}</span>`;
+  };
+
+  document.getElementById("app").innerHTML = `
+<div class="screen waiting-room">
+  <h1 class="title" style="font-size:1.6rem">Don't Be the Third Wheel!</h1>
+
+  <div class="room-code-banner">
+    <span class="room-code-label">Room Code</span>
+    <span class="room-code-value" id="room-code-val">${room.room_code}</span>
+    <button class="copy-btn" id="copy-code-btn">Copy</button>
+  </div>
+  <p class="room-code-hint">${isHost
+    ? "Share this code with friends so they can join."
+    : "Waiting for the host to start the game…"}</p>
+
+  <div class="waiting-players">
+    <div class="waiting-section-title">Players <span class="dim">(turn order)</span></div>
+    <div id="player-list">
+      ${players.map((p, i) => `
+        <div class="player-row ${p.is_me ? "is-me" : ""}">
+          <span class="player-order">${i + 1}.</span>
+          <span class="player-row-name">
+            ${p.name}
+            ${p.is_me ? '<span class="you-tag">(you)</span>' : ""}
+            ${i === 0 ? '<span class="host-tag">★ host</span>' : ""}
+          </span>
+          ${aiBadge(p)}
+          ${isHost ? `<span class="player-controls">
+            <button class="icon-btn" onclick="roomMove('${p.player_id}','up')" ${i===0?"disabled":""}>↑</button>
+            <button class="icon-btn" onclick="roomMove('${p.player_id}','down')" ${i===players.length-1?"disabled":""}>↓</button>
+            ${p.is_me ? "" : `<button class="icon-btn danger" onclick="roomRemove('${p.player_id}')">✕</button>`}
+          </span>` : ""}
+        </div>`).join("")}
+    </div>
+
+    ${canAddAI ? `
+    <div class="add-ai-wrap" id="add-ai-wrap">
+      <button class="btn btn-outline" id="btn-show-ai">+ Add AI Player</button>
+      <div class="add-ai-form hidden" id="add-ai-form">
+        <input class="player-name-input" id="ai-name-inp" value="Bot ${players.filter(p=>p.is_ai).length+1}" style="width:110px" />
+        <select class="ai-type-select" id="ai-type-sel">
+          <option value="random">🎲 Random</option>
+          <option value="basic">🤖 Strategic</option>
+          <option value="mcts">🧠 MCTS</option>
+        </select>
+        <span class="mcts-row hidden" id="mcts-row">
+          <input type="number" class="rollout-input" id="ai-rollouts-inp" value="50" min="1" max="500" />
+          <span class="dim" style="font-size:.8rem">rollouts</span>
+        </span>
+        <button class="btn btn-primary ai-add-btn" id="btn-add-ai">Add</button>
+        <button class="btn btn-cancel ai-add-btn" id="btn-cancel-ai">✕</button>
+      </div>
+    </div>` : ""}
+
+    <div class="start-section">
+      ${isHost ? `
+        <button class="btn btn-primary start-btn" id="btn-start" ${canStart?"":"disabled"}>▶ Start Game</button>
+        ${players.length < 2 ? '<p class="start-hint">Need at least 2 players.</p>' : ""}
+      ` : `<div class="spinner"></div><p class="dim">Waiting for host to start…</p>`}
+      <button class="btn btn-cancel" id="btn-leave" style="margin-left:10px;padding:8px 14px;font-size:.85rem">Leave Room</button>
+    </div>
+  </div>
+</div>`;
+
+  document.getElementById("copy-code-btn").addEventListener("click", () => {
+    navigator.clipboard.writeText(room.room_code).then(() => {
+      const b = document.getElementById("copy-code-btn");
+      b.textContent = "Copied!";
+      setTimeout(() => b.textContent = "Copy", 2000);
+    });
+  });
+
+  document.getElementById("btn-leave").addEventListener("click", () => {
+    clearRoom(); stopRoomPolling(); renderRoomLobby();
+  });
+
+  if (isHost) {
+    document.getElementById("btn-start")?.addEventListener("click", async () => {
+      const res = await apiPost(`/api/rooms/${room.room_code}/start`, { t: LOBBY_TOKEN });
+      if (res.error) { alert(res.error); return; }
+      if (res.my_game_url) { stopRoomPolling(); window.location.href = res.my_game_url; }
+    });
+
+    if (canAddAI) {
+      document.getElementById("btn-show-ai").addEventListener("click", () => {
+        document.getElementById("add-ai-form").classList.remove("hidden");
+        document.getElementById("btn-show-ai").style.display = "none";
+      });
+      document.getElementById("btn-cancel-ai").addEventListener("click", () => {
+        document.getElementById("add-ai-form").classList.add("hidden");
+        document.getElementById("btn-show-ai").style.display = "";
+      });
+      document.getElementById("ai-type-sel").addEventListener("change", () => {
+        document.getElementById("mcts-row").classList.toggle(
+          "hidden", document.getElementById("ai-type-sel").value !== "mcts");
+      });
+      document.getElementById("btn-add-ai").addEventListener("click", async () => {
+        const name = document.getElementById("ai-name-inp").value.trim()
+                     || `Bot ${players.filter(p=>p.is_ai).length+1}`;
+        const ai_type = document.getElementById("ai-type-sel").value;
+        const ai_rollouts = ai_type === "mcts"
+          ? Math.max(1, Math.min(500, parseInt(document.getElementById("ai-rollouts-inp").value)||50))
+          : 50;
+        const res = await apiPost(`/api/rooms/${room.room_code}/add_ai`,
+          { t: LOBBY_TOKEN, name, ai_type, ai_rollouts });
+        if (res.error) { alert(res.error); return; }
+        ROOM = res; roomVersion = res.version; renderWaitingRoom(res); startRoomPolling();
+      });
+    }
+  }
+}
+
+async function roomMove(playerId, direction) {
+  const res = await apiPost(`/api/rooms/${ROOM_CODE}/move_player`,
+    { t: LOBBY_TOKEN, player_id: playerId, direction });
+  if (res.error) { alert(res.error); return; }
+  ROOM = res; roomVersion = res.version; renderWaitingRoom(res);
+}
+async function roomRemove(playerId) {
+  if (!confirm("Remove this player?")) return;
+  const res = await apiPost(`/api/rooms/${ROOM_CODE}/remove_player`,
+    { t: LOBBY_TOKEN, player_id: playerId });
+  if (res.error) { alert(res.error); return; }
+  ROOM = res; roomVersion = res.version; renderWaitingRoom(res);
+}
+
 /* ── render dispatch ─────────────────────────────────────────────────────── */
 function render(state) {
   G = state;
@@ -72,7 +346,7 @@ function render(state) {
   const app = document.getElementById("app");
 
   if (!GAME_ID) {
-    renderSetup(); return;
+    renderRoomLobby(); return;
   }
   if (state.phase === "arrangement") {
     const me = state.players[MY_IDX];
@@ -99,180 +373,6 @@ function showMsg(msg, cls = "") {
   el.textContent = msg;
   el.className = "action-msg " + cls;
   if (cls === "success") msgTimer = setTimeout(() => { el.textContent = ""; el.className = "action-msg"; }, 3000);
-}
-
-/* ══ SETUP SCREEN (host — no GAME_ID yet) ═══════════════════════════════════ */
-function renderSetup() {
-  document.getElementById("app").innerHTML = `
-<div class="screen">
-  <h1 class="title">Don't Be the Third Wheel!</h1>
-  <p class="subtitle">A romantic scheduling strategy game for 2–3 players</p>
-
-  <div class="setup-form">
-    <div class="form-group">
-      <label>Game Mode</label>
-      <div class="radio-group">
-        <label><input type="radio" name="mode" value="multi" checked> Multiplayer</label>
-        <label><input type="radio" name="mode" value="ai"> 1 Player vs 2 AI Bots</label>
-      </div>
-    </div>
-
-    <div id="multi-opts">
-      <div class="form-group">
-        <label>Number of Players</label>
-        <div class="radio-group">
-          <label><input type="radio" name="np" value="2"> 2 Players</label>
-          <label><input type="radio" name="np" value="3" checked> 3 Players</label>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Player Names</label>
-        <div class="name-fields">
-          ${[1,2,3].map(i => `
-            <div class="player-name-row" id="nr${i}">
-              <span class="pnum">P${i}</span>
-              <input class="player-name-input" id="pn${i}" value="Player ${i}" />
-            </div>`).join("")}
-        </div>
-      </div>
-    </div>
-
-    <div id="ai-opts" style="display:none">
-      <div class="form-group">
-        <label>Your Name</label>
-        <div class="name-fields">
-          <div class="player-name-row">
-            <span class="pnum">You</span>
-            <input class="player-name-input" id="ai-name" value="Player 1" />
-          </div>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>AI Opponents</label>
-        <div class="bot-config-list">
-          ${[1, 2].map(i => `
-          <div class="bot-config-row">
-            <span class="bot-label">Bot ${i}</span>
-            <select class="bot-type-select" id="bot-type-${i}">
-              <option value="random">🎲 Random</option>
-              <option value="basic">🤖 Strategic</option>
-              <option value="mcts">🧠 MCTS</option>
-            </select>
-            <div class="mcts-rollout-group" id="mcts-grp-${i}" style="display:none">
-              <label class="rollout-label">Rollouts</label>
-              <input type="number" class="rollout-input" id="bot-rollouts-${i}" value="50" min="1" max="500" />
-            </div>
-          </div>`).join("")}
-        </div>
-        <div class="bot-type-hints">
-          <div>🎲 <strong>Random</strong> — flips and uses abilities completely at random</div>
-          <div>🤖 <strong>Strategic</strong> — avoids penalties, targets good positions, disrupts opponents</div>
-          <div>🧠 <strong>MCTS</strong> — simulates many random game continuations to pick the best flip</div>
-        </div>
-      </div>
-    </div>
-
-    <button id="create-btn" class="btn btn-primary">Create Game →</button>
-  </div>
-
-  <div class="rules-grid">
-    <div class="rules-box">
-      <h3>Card Abilities</h3>
-      ${Object.entries(CARD_ABILITIES).map(([ct, ab]) => `
-        <div class="rule-row">
-          <span class="card-badge ct-${ct}">${ct}</span>
-          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${ab}
-        </div>`).join("")}
-    </div>
-    <div class="rules-box">
-      <h3>Scoring</h3>
-      ${Object.entries(CARD_SCORING).map(([ct, sc]) => `
-        <div class="rule-row">
-          <span class="card-badge ct-${ct}">${ct}</span>
-          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${sc.replace(/<br>/g, " / ")}
-        </div>`).join("")}
-      <div class="rule-row" style="margin-top:6px;color:#FFCCAA">
-        Alone at Beach → −1 pt (solo penalty)
-      </div>
-    </div>
-  </div>
-</div>`;
-
-  document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener("change", () => {
-    const isAI = document.querySelector('input[name="mode"]:checked').value === "ai";
-    document.getElementById("multi-opts").style.display = isAI ? "none" : "";
-    document.getElementById("ai-opts").style.display   = isAI ? ""     : "none";
-  }));
-
-  [1, 2].forEach(i => {
-    const sel = document.getElementById(`bot-type-${i}`);
-    if (sel) sel.addEventListener("change", () => {
-      document.getElementById(`mcts-grp-${i}`).style.display =
-        sel.value === "mcts" ? "flex" : "none";
-    });
-  });
-
-  const updateRows = () => {
-    const n = +document.querySelector('input[name="np"]:checked').value;
-    document.getElementById("nr3").style.display = n >= 3 ? "" : "none";
-  };
-  document.querySelectorAll('input[name="np"]').forEach(r => r.addEventListener("change", updateRows));
-  updateRows();
-
-  document.getElementById("create-btn").addEventListener("click", async () => {
-    const mode = document.querySelector('input[name="mode"]:checked').value;
-    if (mode === "ai") {
-      const humanName = document.getElementById("ai-name").value.trim() || "Player 1";
-      const bots = [1, 2].map(i => {
-        const type = document.getElementById(`bot-type-${i}`).value;
-        if (type === "mcts") {
-          const rollouts = Math.max(1, Math.min(500, parseInt(document.getElementById(`bot-rollouts-${i}`).value) || 50));
-          return { type: "mcts", rollouts };
-        }
-        return { type };
-      });
-      const res = await apiPost("/api/create", { vs_ai: true, human_name: humanName, bots });
-      window.location.href = res.player_url;
-    } else {
-      const n = +document.querySelector('input[name="np"]:checked').value;
-      const names = [1,2,3].map(i => document.getElementById(`pn${i}`).value.trim());
-      const res = await apiPost("/api/create", { num_players: n, names });
-      renderLobby(res);
-    }
-  });
-}
-
-/* ── lobby (after creating a game) ──────────────────────────────────────────── */
-function renderLobby(res) {
-  const { game_id, tokens, player_names } = res;
-  const base = window.location.origin;
-
-  document.getElementById("app").innerHTML = `
-<div class="screen">
-  <h1 class="title" style="font-size:1.7rem">Game Created!</h1>
-  <p class="subtitle">Share each player's link below, then open your own.</p>
-
-  <div class="lobby-box">
-    <p style="color:#CCAAFF;margin-bottom:14px;font-size:.9rem">
-      Each player opens their own link on their own device.
-      Arrangement happens simultaneously — no passing required.
-    </p>
-    ${player_names.map((name, i) => `
-      <div class="player-link-card">
-        <span class="plname">${name}</span>
-        <span class="plurl" id="url${i}">${base}/game/${game_id}/${tokens[i]}</span>
-        <button class="copy-btn" onclick="copyLink('url${i}', this)">Copy link</button>
-      </div>`).join("")}
-  </div>
-</div>`;
-}
-
-function copyLink(elId, btn) {
-  const url = document.getElementById(elId).textContent;
-  navigator.clipboard.writeText(url).then(() => {
-    btn.textContent = "Copied!";
-    setTimeout(() => btn.textContent = "Copy link", 2000);
-  });
 }
 
 /* ══ ARRANGEMENT ════════════════════════════════════════════════════════════ */
@@ -721,6 +821,7 @@ function endHTML(state) {
 
 function bindEnd() {
   document.getElementById("play-again").addEventListener("click", () => {
+    clearRoom();
     window.location.href = "/";
   });
 }

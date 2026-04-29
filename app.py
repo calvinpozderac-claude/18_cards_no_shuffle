@@ -1,4 +1,5 @@
 import copy
+import threading
 import uuid
 import random
 from flask import Flask, request, jsonify, render_template
@@ -7,6 +8,51 @@ app = Flask(__name__)
 app.secret_key = "dtbtw-ai-secret-2024"
 
 GAMES = {}
+
+# ── room lobby ────────────────────────────────────────────────────────────────
+# Rooms allow players on separate devices to find each other via a 3-digit code
+# before the underlying game is created.
+
+ROOMS: dict = {}
+ROOMS_LOCK = threading.Lock()
+
+
+def _gen_room_code() -> str:
+    for _ in range(2000):
+        code = f"{random.randint(100, 999)}"
+        if code not in ROOMS:
+            return code
+    raise RuntimeError("Room namespace exhausted")
+
+
+def _room_view(room: dict, lobby_token: str) -> dict:
+    """Serialise room state for a particular lobby participant."""
+    my_idx = next((i for i, p in enumerate(room["players"])
+                   if p["lobby_token"] == lobby_token), None)
+    my_game_url = None
+    if room["game_id"] and my_idx is not None:
+        gt = room["players"][my_idx].get("game_token")
+        if gt:
+            my_game_url = f"/game/{room['game_id']}/{gt}"
+    return {
+        "room_code":   room["code"],
+        "status":      room["status"],
+        "is_host":     room["host_token"] == lobby_token,
+        "my_idx":      my_idx,
+        "my_game_url": my_game_url,
+        "version":     room["version"],
+        "players": [
+            {
+                "name":        p["name"],
+                "is_ai":       p["is_ai"],
+                "ai_type":     p.get("ai_type"),
+                "ai_rollouts": p.get("ai_rollouts", 50),
+                "is_me":       p["lobby_token"] == lobby_token,
+                "player_id":   p["lobby_token"],
+            }
+            for p in room["players"]
+        ],
+    }
 
 LOCATION_NAMES = {
     1: "Coffee Shop",
@@ -999,6 +1045,192 @@ def api_end_game(game_id, token):
     game["state"]["phase"] = "end"
     game["state"]["game_over"] = True
     return jsonify(_state_for_player(game, pidx))
+
+# ── room routes ───────────────────────────────────────────────────────────────
+
+@app.route("/api/rooms/create", methods=["POST"])
+def api_rooms_create():
+    data = request.json or {}
+    name = str(data.get("name", "")).strip() or "Player 1"
+    lobby_token = uuid.uuid4().hex
+    with ROOMS_LOCK:
+        code = _gen_room_code()
+        room = {
+            "code": code,
+            "host_token": lobby_token,
+            "status": "lobby",
+            "players": [{"lobby_token": lobby_token, "name": name,
+                         "is_ai": False, "ai_type": None, "ai_rollouts": 50,
+                         "game_token": None}],
+            "game_id": None,
+            "version": 0,
+        }
+        ROOMS[code] = room
+    return jsonify({"room_code": code, "lobby_token": lobby_token,
+                    **_room_view(room, lobby_token)})
+
+
+@app.route("/api/rooms/join", methods=["POST"])
+def api_rooms_join():
+    data = request.json or {}
+    code = str(data.get("code", "")).strip()
+    name = str(data.get("name", "")).strip() or "Player"
+    lobby_token = uuid.uuid4().hex
+    with ROOMS_LOCK:
+        room = ROOMS.get(code)
+        if not room:
+            return jsonify({"error": "Room not found. Check the code and try again."}), 404
+        if room["status"] != "lobby":
+            return jsonify({"error": "Game has already started."}), 400
+        if len(room["players"]) >= 3:
+            return jsonify({"error": "Room is full (max 3 players)."}), 400
+        room["players"].append({"lobby_token": lobby_token, "name": name,
+                                "is_ai": False, "ai_type": None, "ai_rollouts": 50,
+                                "game_token": None})
+        room["version"] += 1
+    return jsonify({"room_code": code, "lobby_token": lobby_token,
+                    **_room_view(room, lobby_token)})
+
+
+@app.route("/api/rooms/<code>")
+def api_room_get(code):
+    lobby_token = request.args.get("t", "")
+    room = ROOMS.get(code)
+    if not room:
+        return jsonify({"error": "Room not found"}), 404
+    return jsonify(_room_view(room, lobby_token))
+
+
+@app.route("/api/rooms/<code>/add_ai", methods=["POST"])
+def api_room_add_ai(code):
+    data = request.json or {}
+    lobby_token = data.get("t", "")
+    with ROOMS_LOCK:
+        room = ROOMS.get(code)
+        if not room:
+            return jsonify({"error": "Room not found"}), 404
+        if room["host_token"] != lobby_token:
+            return jsonify({"error": "Only the host can add AI players"}), 403
+        if room["status"] != "lobby":
+            return jsonify({"error": "Game already started"}), 400
+        if len(room["players"]) >= 3:
+            return jsonify({"error": "Room is full (max 3 players)"}), 400
+        ai_type = str(data.get("ai_type", "random"))
+        ai_rollouts = max(1, min(500, int(data.get("ai_rollouts", 50))))
+        n_bots = sum(1 for p in room["players"] if p["is_ai"])
+        ai_name = str(data.get("name", f"Bot {n_bots + 1}")).strip() or f"Bot {n_bots + 1}"
+        room["players"].append({"lobby_token": f"ai_{uuid.uuid4().hex}", "name": ai_name,
+                                "is_ai": True, "ai_type": ai_type, "ai_rollouts": ai_rollouts,
+                                "game_token": None})
+        room["version"] += 1
+    return jsonify(_room_view(room, lobby_token))
+
+
+@app.route("/api/rooms/<code>/remove_player", methods=["POST"])
+def api_room_remove_player(code):
+    data = request.json or {}
+    lobby_token = data.get("t", "")
+    with ROOMS_LOCK:
+        room = ROOMS.get(code)
+        if not room:
+            return jsonify({"error": "Room not found"}), 404
+        if room["host_token"] != lobby_token:
+            return jsonify({"error": "Only the host can remove players"}), 403
+        if room["status"] != "lobby":
+            return jsonify({"error": "Game already started"}), 400
+        target = data.get("player_id", "")
+        if target == lobby_token:
+            return jsonify({"error": "Cannot remove yourself"}), 400
+        room["players"] = [p for p in room["players"] if p["lobby_token"] != target]
+        room["version"] += 1
+    return jsonify(_room_view(room, lobby_token))
+
+
+@app.route("/api/rooms/<code>/move_player", methods=["POST"])
+def api_room_move_player(code):
+    data = request.json or {}
+    lobby_token = data.get("t", "")
+    with ROOMS_LOCK:
+        room = ROOMS.get(code)
+        if not room:
+            return jsonify({"error": "Room not found"}), 404
+        if room["host_token"] != lobby_token:
+            return jsonify({"error": "Only the host can reorder players"}), 403
+        if room["status"] != "lobby":
+            return jsonify({"error": "Game already started"}), 400
+        target = data.get("player_id", "")
+        direction = data.get("direction", "")
+        players = room["players"]
+        idx = next((i for i, p in enumerate(players) if p["lobby_token"] == target), None)
+        if idx is None:
+            return jsonify({"error": "Player not found"}), 404
+        new_idx = idx - 1 if direction == "up" else idx + 1
+        if 0 <= new_idx < len(players):
+            players[idx], players[new_idx] = players[new_idx], players[idx]
+            room["version"] += 1
+    return jsonify(_room_view(room, lobby_token))
+
+
+@app.route("/api/rooms/<code>/start", methods=["POST"])
+def api_room_start(code):
+    data = request.json or {}
+    lobby_token = data.get("t", "")
+    with ROOMS_LOCK:
+        room = ROOMS.get(code)
+        if not room:
+            return jsonify({"error": "Room not found"}), 404
+        if room["host_token"] != lobby_token:
+            return jsonify({"error": "Only the host can start the game"}), 403
+        if room["status"] != "lobby":
+            return jsonify({"error": "Game already started"}), 400
+        if len(room["players"]) < 2:
+            return jsonify({"error": "Need at least 2 players to start"}), 400
+
+        player_names = [p["name"] for p in room["players"]]
+        game_id = uuid.uuid4().hex[:10]
+        game_tokens = [uuid.uuid4().hex for _ in room["players"]]
+
+        state = _new_state(player_names)
+        ai_players = []
+        ai_diffs = {}
+
+        for i, rp in enumerate(room["players"]):
+            if rp["is_ai"]:
+                ai_players.append(i)
+                ai_type = rp.get("ai_type", "random")
+                n_roll = max(1, min(500, rp.get("ai_rollouts", 50)))
+                if ai_type == "mcts":
+                    ai_diffs[str(i)] = f"mcts:{n_roll}"
+                elif ai_type == "basic":
+                    ai_diffs[str(i)] = "basic"
+                else:
+                    ai_diffs[str(i)] = "random"
+                cards = [None] * 6
+                for ct, day in _ai_arrange().items():
+                    cards[day - 1] = {"card_type": ct, "face_up": False, "arrival": 0}
+                state["players"][i]["cards"] = cards
+                state["players"][i]["arranged"] = True
+
+        state["ai_players"] = ai_players
+        state["ai_difficulties"] = ai_diffs
+
+        if all(p["arranged"] for p in state["players"]):
+            state["phase"] = "game"
+
+        game = {"state": state, "tokens": game_tokens}
+        GAMES[game_id] = game
+
+        if state["phase"] == "game":
+            _process_ai_turns(game)
+
+        for i, rp in enumerate(room["players"]):
+            rp["game_token"] = game_tokens[i]
+        room["game_id"] = game_id
+        room["status"] = "started"
+        room["version"] += 1
+
+    return jsonify(_room_view(room, lobby_token))
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

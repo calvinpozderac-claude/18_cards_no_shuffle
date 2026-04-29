@@ -412,3 +412,110 @@ body {
 
 /* Restaurant hot-location glow (face-up ct-4 cards) */
 .card.face-up.ct-4 { box-shadow: 0 0 8px #FF990055; }
+
+/* ── room lobby ───────────────────────────────────────────────────────────── */
+.lobby-screen { max-width: 920px; }
+
+.lobby-cards {
+  display: flex; align-items: flex-start; gap: 0;
+  margin: 28px auto; max-width: 700px;
+  background: #1e1038; border-radius: 14px; overflow: hidden;
+}
+.lobby-card {
+  flex: 1; padding: 28px 28px 32px;
+}
+.lobby-card:first-child { border-right: 1px solid #2a1a4e; }
+.lobby-card-title { font-size: 1.1rem; font-weight: 700; color: #FFD700; margin-bottom: 8px; }
+.lobby-card-desc  { font-size: .82rem; color: #8870aa; margin-bottom: 18px; line-height: 1.5; }
+.lobby-divider {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; flex-shrink: 0;
+  font-size: .8rem; color: #4a3a6a; font-weight: 700;
+}
+.lobby-err {
+  background: #4a1a1a; color: #FF8080; border-radius: 8px;
+  padding: 10px 16px; text-align: center; max-width: 500px;
+  margin: 0 auto 16px; font-size: .9rem;
+}
+
+.room-code-input {
+  background: #2a1a4e; border: 1px solid #4a2a7e; border-radius: 6px;
+  color: #fff; padding: 8px 12px; font-size: 1.6rem; font-weight: 800;
+  letter-spacing: .25em; text-align: center; width: 100%;
+}
+.room-code-input:focus { outline: none; border-color: #8040FF; }
+
+/* ── room waiting ─────────────────────────────────────────────────────────── */
+.waiting-room { max-width: 620px; }
+
+.room-code-banner {
+  display: flex; align-items: center; gap: 14px; justify-content: center;
+  background: #1e1038; border-radius: 12px; padding: 16px 24px;
+  margin: 16px auto; max-width: 340px;
+}
+.room-code-label { font-size: .75rem; font-weight: 700; color: #8870aa; text-transform: uppercase; letter-spacing: .08em; }
+.room-code-value {
+  font-size: 2.4rem; font-weight: 900; color: #FFD700;
+  letter-spacing: .2em; font-variant-numeric: tabular-nums;
+}
+.room-code-hint { text-align: center; color: #8870aa; font-size: .83rem; margin-bottom: 24px; }
+.copy-btn {
+  background: #2a1a4e; border: 1px solid #4a2a7e; border-radius: 6px;
+  color: #CCAAFF; font-size: .78rem; padding: 5px 10px; cursor: pointer;
+  transition: background .15s;
+}
+.copy-btn:hover { background: #3a2a6e; }
+
+.waiting-players { background: #1e1038; border-radius: 12px; padding: 18px 20px; }
+.waiting-section-title { font-weight: 700; color: #CCAAFF; margin-bottom: 12px; font-size: .9rem; }
+.dim { color: #6a5a8a; }
+
+.player-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px; margin-bottom: 4px;
+  background: #180830;
+}
+.player-row.is-me { background: #1e0f42; border: 1px solid #3a2a6e; }
+.player-order { color: #6a5a8a; font-size: .82rem; width: 18px; flex-shrink: 0; }
+.player-row-name { flex: 1; font-weight: 600; font-size: .92rem; }
+.you-tag  { color: #80FFCC; font-weight: 400; font-size: .78rem; margin-left: 4px; }
+.host-tag { color: #FFD700; font-weight: 400; font-size: .78rem; margin-left: 4px; }
+.ai-badge {
+  background: #2a1a4e; border: 1px solid #3a2a6e;
+  border-radius: 5px; padding: 2px 7px;
+  font-size: .72rem; color: #CCAAFF; flex-shrink: 0;
+}
+
+.player-controls { display: flex; gap: 4px; flex-shrink: 0; }
+.icon-btn {
+  background: #2a1a4e; border: 1px solid #3a2a6e; border-radius: 5px;
+  color: #CCAAFF; padding: 2px 7px; cursor: pointer; font-size: .8rem;
+  transition: background .12s;
+}
+.icon-btn:hover:not(:disabled) { background: #3a2a6e; }
+.icon-btn:disabled { opacity: .3; cursor: not-allowed; }
+.icon-btn.danger { color: #FF8080; }
+.icon-btn.danger:hover { background: #4a1a1a; border-color: #6a2a2a; }
+
+.add-ai-wrap { margin-top: 12px; }
+.add-ai-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.ai-type-select {
+  background: #2a1a4e; border: 1px solid #4a2a7e; border-radius: 6px;
+  color: #e0d0ff; padding: 7px 10px; font-size: .88rem;
+}
+.mcts-row { display: flex; align-items: center; gap: 5px; }
+.rollout-input {
+  background: #2a1a4e; border: 1px solid #4a2a7e; border-radius: 6px;
+  color: #e0d0ff; padding: 6px 8px; font-size: .88rem; width: 60px;
+}
+.ai-add-btn { padding: 7px 14px; font-size: .88rem; }
+.btn-outline {
+  background: transparent; border: 1px solid #4a2a7e; border-radius: 8px;
+  color: #CCAAFF; padding: 8px 16px; font-size: .88rem; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.btn-outline:hover { background: #2a1a4e; border-color: #8040FF; }
+
+.start-section { display: flex; align-items: center; margin-top: 18px; flex-wrap: wrap; gap: 8px; }
+.start-btn { padding: 12px 30px; font-size: 1rem; }
+.start-hint { color: #FF8080; font-size: .82rem; width: 100%; margin-top: 2px; }
