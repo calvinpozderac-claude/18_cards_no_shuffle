@@ -99,7 +99,7 @@ for g in range(N_GAMES):
 # ── report ────────────────────────────────────────────────────────────────────
 card_names = {1: "Coffee", 2: "Park", 3: "Cinema", 4: "Rest.", 5: "Beach", 6: "Museum"}
 
-header = f"{'Player':>7}  {'Place':>7}   {'N':>5}  " + "  ".join(f"{card_names[ct]:>7}" for ct in range(1, 7)) + "  {'Total':>7}"
+header = f"{'Player':>7}  {'Place':>7}   {'N':>5}  " + "  ".join(f"{card_names[ct]:>7}" for ct in range(1, 7)) + f"  {'Total':>7}"
 print()
 print(header)
 print("─" * len(header))
@@ -112,7 +112,8 @@ for player_order in range(1, N_PLAYERS + 1):
             continue
         avgs = [flip_counts[key][ct] / n for ct in range(1, 7)]
         total_avg = sum(avgs)
-        row = f"{'P'+str(player_order):>7}  {str(win_pos)+'st/2nd/3rd'.split('/')[win_pos-1]:>7}   {n:>5}  "
+        place_label = ["1st", "2nd", "3rd"][win_pos - 1]
+        row = f"{'P'+str(player_order):>7}  {place_label:>7}   {n:>5}  "
         row += "  ".join(f"{a:>7.3f}" for a in avgs)
         row += f"  {total_avg:>7.3f}"
         print(row)
@@ -127,7 +128,7 @@ for (po, wp), n in game_counts.items():
     for ct in range(1, 7):
         wp_flips[wp][ct] += flip_counts[(po, wp)][ct]
 
-print(f"\n{'Place':>7}   {'N':>5}  " + "  ".join(f"{card_names[ct]:>7}" for ct in range(1, 7)) + "  {'Total':>7}")
+print(f"\n{'Place':>7}   {'N':>5}  " + "  ".join(f"{card_names[ct]:>7}" for ct in range(1, 7)) + f"  {'Total':>7}")
 print("─" * (len(header) - 12))
 for wp in range(1, N_PLAYERS + 1):
     n = wp_counts[wp]
