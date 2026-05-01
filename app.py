@@ -709,7 +709,7 @@ def api_create():
                 ai_pidx = i + 1
                 bt = bot_info.get("type", "random")
                 if bt == "mcts":
-                    r = max(1, min(500, int(bot_info.get("rollouts", 50))))
+                    r = max(1, int(bot_info.get("rollouts", 50)))
                     ai_diffs[str(ai_pidx)] = f"mcts:{r}"
                 elif bt == "basic":
                     ai_diffs[str(ai_pidx)] = "basic"
@@ -1198,7 +1198,7 @@ def api_room_start(code):
             if rp["is_ai"]:
                 ai_players.append(i)
                 ai_type = rp.get("ai_type", "random")
-                n_roll = max(1, min(500, rp.get("ai_rollouts", 50)))
+                n_roll = max(1, rp.get("ai_rollouts", 50))
                 if ai_type == "mcts":
                     ai_diffs[str(i)] = f"mcts:{n_roll}"
                 elif ai_type == "basic":

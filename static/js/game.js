@@ -259,7 +259,7 @@ function renderWaitingRoom(room) {
           <option value="mcts">🧠 MCTS</option>
         </select>
         <span class="mcts-row hidden" id="mcts-row">
-          <input type="number" class="rollout-input" id="ai-rollouts-inp" value="50" min="1" max="500" />
+          <input type="number" class="rollout-input" id="ai-rollouts-inp" value="50" min="1" />
           <span class="dim" style="font-size:.8rem">rollouts</span>
         </span>
         <button class="btn btn-primary ai-add-btn" id="btn-add-ai">Add</button>
@@ -314,7 +314,7 @@ function renderWaitingRoom(room) {
                      || `Bot ${players.filter(p=>p.is_ai).length+1}`;
         const ai_type = document.getElementById("ai-type-sel").value;
         const ai_rollouts = ai_type === "mcts"
-          ? Math.max(1, Math.min(500, parseInt(document.getElementById("ai-rollouts-inp").value)||50))
+          ? Math.max(1, parseInt(document.getElementById("ai-rollouts-inp").value)||50)
           : 50;
         const res = await apiPost(`/api/rooms/${room.room_code}/add_ai`,
           { t: LOBBY_TOKEN, name, ai_type, ai_rollouts });
