@@ -1116,7 +1116,7 @@ def api_room_add_ai(code):
         if len(room["players"]) >= 3:
             return jsonify({"error": "Room is full (max 3 players)"}), 400
         ai_type = str(data.get("ai_type", "random"))
-        ai_rollouts = max(1, min(500, int(data.get("ai_rollouts", 50))))
+        ai_rollouts = max(1, int(data.get("ai_rollouts", 50)))
         n_bots = sum(1 for p in room["players"] if p["is_ai"])
         ai_name = str(data.get("name", f"Bot {n_bots + 1}")).strip() or f"Bot {n_bots + 1}"
         room["players"].append({"lobby_token": f"ai_{uuid.uuid4().hex}", "name": ai_name,
