@@ -31,12 +31,12 @@
 
     const LOCATION_NAMES = {1:"Coffee Shop",2:"Park",3:"Cinema",4:"Restaurant",5:"Beach",6:"Museum"};
     const CARD_ABILITIES = {
-      1:"Flip an opponent's face-up card face down",
-      2:"Flip one of your own face-up cards face down",
-      3:"Swap the day slots of 2 of another player's cards",
-      4:"Swap the day slots of 2 of your own cards",
-      5:"Change the arrival order of an opponent's face-up card",
-      6:"Change the arrival order of one of your own face-up cards"
+      1: {strong: "Lock an entire day (all cards immune to abilities)", normal: "Lock 2 cards on a chosen day"},
+      2: {strong: "Swap any two of your own cards", normal: "Shift one of your cards to an adjacent day (wraps)"},
+      3: {strong: "Swap any two cards of one opponent", normal: "Shift one opponent's card to an adjacent day (wraps)"},
+      4: {strong: "Freely reorder all arrivals at a location", normal: "Swap two arrivals at a location"},
+      5: {strong: "Bank +2 pts now (no day-match bonus)", normal: "Bank +1 pt now (no day-match bonus)"},
+      6: {strong: "Flip one of your own face-up cards down", normal: "Flip an opponent's face-up card down"},
     };
     const LOC_COLORS = {1:"#FFAAAA",2:"#AAFFCC",3:"#AACCFF",4:"#CCFFAA",5:"#FFEEAA",6:"#DDAAFF"};
   </script>

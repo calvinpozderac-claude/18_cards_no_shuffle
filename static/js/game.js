@@ -1,12 +1,14 @@
-/* ── per-card scoring text (Rules 2, 3, 4) ──────────────────────────────── */
+/* ── per-card scoring text ────────────────────────────────────────────────── */
 const CARD_SCORING = {
-  1: "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1",
-  2: "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1",
-  3: "2♥ 1st+2 · 2nd+1<br>3♥ 3rd−1",
-  4: "2♥ 1st+4 · 2nd+2<br>3♥ 3rd−2 🔥",
-  5: "2♥ 1st+3 · 2nd+3<br>3♥ 3rd−2 · solo−1",
-  6: "2♥ 1st+1 · 2nd+1<br>3♥ no penalty",
+  1: "1st+1 · 2nd+2 · 3rd−1",
+  2: "1st+1 · 2nd+2 · 3rd−1",
+  3: "1st+2 · 2nd+1 · 3rd−1",
+  4: "1st+4 · 2nd+2 · 3rd−2",
+  5: "1st+3 · 2nd+3 · 3rd−2",
+  6: "1st+1 · 2nd+1 · 3rd±0",
 };
+
+const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";
 
 /* ── api ─────────────────────────────────────────────────────────────────── */
 async function apiGet(url) {
@@ -33,7 +35,7 @@ let lastRenderKey = null;
 let msgTimer = null;
 
 function renderKey(s) {
-  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}`;
+  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}|${s.draft_pick_idx||0}`;
 }
 
 /* ── room state (persisted across refreshes) ─────────────────────────────── */
@@ -149,11 +151,12 @@ function renderRoomLobby() {
 
   <div class="rules-grid">
     <div class="rules-box">
-      <h3>Card Abilities</h3>
+      <h3>Card Abilities (Strong / Normal)</h3>
       ${Object.entries(CARD_ABILITIES).map(([ct, ab]) => `
         <div class="rule-row">
           <span class="card-badge ct-${ct}">${ct}</span>
-          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${ab}
+          <span class="loc-name">${LOCATION_NAMES[ct]}</span>:
+          <span style="font-size:.75rem"><strong>S:</strong> ${ab.strong}<br><strong>N:</strong> ${ab.normal}</span>
         </div>`).join("")}
     </div>
     <div class="rules-box">
@@ -161,9 +164,9 @@ function renderRoomLobby() {
       ${Object.entries(CARD_SCORING).map(([ct, sc]) => `
         <div class="rule-row">
           <span class="card-badge ct-${ct}">${ct}</span>
-          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${sc.replace(/<br>/g, " / ")}
+          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${sc}
         </div>`).join("")}
-      <div class="rule-row" style="margin-top:6px;color:#FFCCAA">Alone at Beach → −1 pt</div>
+      <div class="rule-row" style="margin-top:6px;color:#FFCCAA;font-size:.75rem">${DAY_MATCH_HINT}</div>
     </div>
   </div>
 </div>`;
@@ -348,7 +351,10 @@ function render(state) {
   if (!GAME_ID) {
     renderRoomLobby(); return;
   }
-  if (state.phase === "arrangement") {
+  if (state.phase === "draft") {
+    app.innerHTML = draftHTML(state);
+    bindDraft(state);
+  } else if (state.phase === "arrangement") {
     const me = state.players[MY_IDX];
     if (!me.arranged) {
       app.innerHTML = arrangeHTML(state);
@@ -375,9 +381,99 @@ function showMsg(msg, cls = "") {
   if (cls === "success") msgTimer = setTimeout(() => { el.textContent = ""; el.className = "action-msg"; }, 3000);
 }
 
+/* ══ DRAFT SCREEN ═══════════════════════════════════════════════════════════ */
+function draftHTML(state) {
+  const draftOrder = state.draft_order || [];
+  const pickIdx = state.draft_pick_idx || 0;
+  const pool = state.draft_pool || [];
+  const myDraftCards = (state.players[MY_IDX] || {}).draft_cards || [];
+  const isMyDraftTurn = pickIdx < draftOrder.length && draftOrder[pickIdx] === MY_IDX;
+  const currentDrafter = pickIdx < draftOrder.length
+    ? (state.players[draftOrder[pickIdx]] || {}).name || "?"
+    : "Draft complete";
+
+  // Build snake order visualization
+  const snakeViz = draftOrder.map((pidx, i) => {
+    const isCurrent = i === pickIdx;
+    const isPast = i < pickIdx;
+    const pname = (state.players[pidx] || {}).name || `P${pidx+1}`;
+    return `<span class="draft-order-item ${isCurrent ? "draft-order-current" : ""} ${isPast ? "draft-order-past" : ""}"
+      title="${pname}">${i+1}. ${pname.slice(0,6)}</span>`;
+  }).join("");
+
+  return `
+<div class="screen draft-screen">
+  <h1 class="title" style="font-size:1.7rem">Snake Draft Phase</h1>
+  <p class="subtitle">Draft 2 strong cards. Everyone gets 1 normal card for each type they didn't draft.</p>
+
+  <div class="draft-status-bar">
+    ${isMyDraftTurn
+      ? `<span class="draft-your-turn">It's YOUR turn to pick! (Pick ${pickIdx + 1} of ${draftOrder.length})</span>`
+      : pickIdx < draftOrder.length
+        ? `<span class="draft-waiting">Waiting for <strong>${currentDrafter}</strong> to pick (Pick ${pickIdx + 1} of ${draftOrder.length})</span>`
+        : `<span class="draft-done">Draft complete! Proceeding to arrangement…</span>`}
+  </div>
+
+  <div class="draft-snake-order">${snakeViz}</div>
+
+  <div class="draft-my-picks">
+    <span class="draft-section-label">Your strong picks:</span>
+    ${myDraftCards.filter(c => c.strength === "strong").map(c => `
+      <span class="draft-picked-card ct-${c.card_type}">
+        ${LOCATION_NAMES[c.card_type]} (★ Strong)
+      </span>`).join("")}
+    ${myDraftCards.filter(c => c.strength === "strong").length === 0
+      ? '<span class="draft-none">None yet</span>' : ""}
+  </div>
+
+  <p style="text-align:center;font-weight:700;color:#CC99FF;margin:12px 0 6px">Draft Pool — Available Strong Cards</p>
+  <div class="draft-pool-grid">
+    ${[1,2,3,4,5,6].map(ct => {
+      const inPool = pool.some(c => c.card_type === ct);
+      const picked = myDraftCards.some(c => c.card_type === ct && c.strength === "strong");
+      return `
+      <button class="draft-card ct-${ct} ${!inPool ? "draft-card-taken" : ""} ${isMyDraftTurn && inPool ? "draft-card-selectable" : ""}"
+              id="draftcard-${ct}" ${!isMyDraftTurn || !inPool ? "disabled" : ""}
+              data-ct="${ct}">
+        <div class="draft-card-strength">★ Strong</div>
+        <div class="draft-card-num">${ct}</div>
+        <div class="draft-card-name">${LOCATION_NAMES[ct]}</div>
+        <div class="draft-card-ability-s">${CARD_ABILITIES[ct].strong}</div>
+        <hr class="card-divider" style="margin:4px 0"/>
+        <div class="draft-card-normal-hint">Normal: ${CARD_ABILITIES[ct].normal}</div>
+        <div class="draft-card-score">${CARD_SCORING[ct]}</div>
+        <div class="draft-card-matchday">Match Day ${ct} for bonus</div>
+        ${!inPool ? '<div class="draft-card-taken-label">TAKEN</div>' : ""}
+      </button>`;
+    }).join("")}
+  </div>
+
+  <p style="text-align:center;font-size:.78rem;color:#8870aa;margin-top:12px">${DAY_MATCH_HINT}</p>
+</div>`;
+}
+
+function bindDraft(state) {
+  const pool = state.draft_pool || [];
+  const pickIdx = state.draft_pick_idx || 0;
+  const draftOrder = state.draft_order || [];
+  const isMyDraftTurn = pickIdx < draftOrder.length && draftOrder[pickIdx] === MY_IDX;
+
+  if (!isMyDraftTurn) return;
+
+  document.querySelectorAll(".draft-card-selectable").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const ct = parseInt(btn.dataset.ct);
+      G = await apiPost(gameUrl("draft_pick"), { card_type: ct });
+      render(G);
+    });
+  });
+}
+
 /* ══ ARRANGEMENT ════════════════════════════════════════════════════════════ */
 function arrangeHTML(state) {
   const me = state.players[MY_IDX];
+  const myDraftCards = me.draft_cards || [];
+
   return `
 <div class="arrange-screen">
   <h1 class="title" style="font-size:1.7rem">Schedule Your Dates!</h1>
@@ -385,14 +481,19 @@ function arrangeHTML(state) {
     <strong style="color:#80FFCC">${me.name}</strong> —
     assign each location to a Day. Only you can see this screen.
   </p>
+  <p style="text-align:center;font-size:.78rem;color:#FFCCAA;margin-bottom:8px">${DAY_MATCH_HINT}</p>
 
-  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:6px">Location Cards</p>
+  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:6px">Your Cards</p>
   <div class="loc-cards" id="loc-cards">
-    ${[1,2,3,4,5,6].map(ct => `
-      <button class="loc-btn" id="loc-${ct}" style="background:${LOC_COLORS[ct]};border-color:${LOC_COLORS[ct]}">
-        <span class="lnum">${ct}</span>
-        <span class="lname">${LOCATION_NAMES[ct]}</span>
-        <span class="labil">${CARD_ABILITIES[ct]}</span>
+    ${myDraftCards.map(card => `
+      <button class="loc-btn" id="loc-${card.card_type}" style="background:${LOC_COLORS[card.card_type]};border-color:${LOC_COLORS[card.card_type]}">
+        <span class="lnum">${card.card_type}</span>
+        <span class="strength-badge ${card.strength === 'strong' ? 'strength-strong' : 'strength-normal'}">
+          ${card.strength === 'strong' ? '★ Strong' : 'Normal'}
+        </span>
+        <span class="lname">${LOCATION_NAMES[card.card_type]}</span>
+        <span class="labil">${card.strength === 'strong' ? CARD_ABILITIES[card.card_type].strong : CARD_ABILITIES[card.card_type].normal}</span>
+        <span class="lmatch" style="font-size:.6rem;opacity:.7">Match Day ${card.card_type} for bonus</span>
       </button>`).join("")}
   </div>
 
@@ -403,15 +504,18 @@ function arrangeHTML(state) {
         <span class="dlabel">Day ${d}</span>
         <span class="dct"></span>
         <span class="dname" style="color:#8870aa">(empty)</span>
+        <span class="dmatch" style="font-size:.6rem;color:#5a8a5a">(match for type ${d})</span>
       </div>`).join("")}
   </div>
 
-  <p class="arrange-status" id="arr-status">Select a location card to begin.</p>
+  <p class="arrange-status" id="arr-status">Select a card to begin.</p>
   <button id="arr-confirm" class="btn btn-primary arrange-confirm" disabled>Lock In My Schedule →</button>
 </div>`;
 }
 
 function bindArrange(state) {
+  const me = state.players[MY_IDX];
+  const myDraftCards = me.draft_cards || [];
   let selCt = 0;
   const assigned = {};
   const dayTaken = {};
@@ -425,28 +529,33 @@ function bindArrange(state) {
       selCt = ct;
       document.querySelectorAll(".loc-btn").forEach(b => b.classList.remove("selected"));
       btn.classList.add("selected");
-      setStatus(`Selected: ${ct} – ${LOCATION_NAMES[ct]}. Now click a Day slot.`);
+      const card = myDraftCards.find(c => c.card_type === ct);
+      const s = card ? card.strength : "normal";
+      setStatus(`Selected: ${ct} – ${LOCATION_NAMES[ct]} (${s === 'strong' ? '★ Strong' : 'Normal'}). Now click a Day slot.`);
     });
   });
 
   document.querySelectorAll(".day-slot").forEach(slot => {
     slot.addEventListener("click", () => {
       const day = +slot.id.split("-")[1];
-      if (!selCt) { setStatus("Select a location card first!"); return; }
+      if (!selCt) { setStatus("Select a card first!"); return; }
       if (assigned[selCt]) { setStatus(`Card ${selCt} already placed!`); return; }
       if (dayTaken[day]) { setStatus(`Day ${day} is taken! Choose another.`); return; }
 
       assigned[selCt] = day;
       dayTaken[day] = selCt;
+      const card = myDraftCards.find(c => c.card_type === selCt);
+      const s = card ? card.strength : "normal";
       slot.classList.add("filled");
       slot.style.background = LOC_COLORS[selCt];
       slot.querySelector(".dct").textContent = selCt;
-      slot.querySelector(".dname").textContent = LOCATION_NAMES[selCt];
+      slot.querySelector(".dname").textContent = LOCATION_NAMES[selCt] + (s === "strong" ? " ★" : "");
       slot.querySelector(".dname").style.color = "";
+      slot.querySelector(".dmatch").style.display = (day === selCt) ? "" : "none";
       document.getElementById(`loc-${selCt}`).disabled = true;
       document.getElementById(`loc-${selCt}`).classList.remove("selected");
       selCt = 0;
-      const rem = 6 - Object.keys(assigned).length;
+      const rem = myDraftCards.length - Object.keys(assigned).length;
       if (rem === 0) {
         setStatus("All cards placed! Click Lock In to continue.");
         document.getElementById("arr-confirm").disabled = false;
@@ -484,6 +593,11 @@ function gameHTML(state) {
   const isMyTurn = cur === MY_IDX;
   const scores = state.scores || {};
   const turnPlayerName = state.players[cur].name;
+  const locks = state.locks || [];
+
+  // Build bank decision modal if pending
+  const bankModal = (state.pending_action === "bank_decision" && isMyTurn)
+    ? buildBankModal(state) : "";
 
   return `
 <div class="game-wrap">
@@ -507,15 +621,22 @@ function gameHTML(state) {
           ? "Your turn — click one of your face-down cards to flip it."
           : `Waiting for ${turnPlayerName} to play…`}
     </span>
-    ${isMyTurn && state.pending_action
+    ${isMyTurn && state.pending_action && state.pending_action !== "bank_decision"
       ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>`
       : ""}
   </div>
 
+  ${bankModal}
+
+  ${buildLockDayPicker(state)}
+
   <div class="board-container">
     <div class="board">
       <div class="board-corner"></div>
-      ${[1,2,3,4,5,6].map(d => `<div class="board-day-header">Day ${d}</div>`).join("")}
+      ${[1,2,3,4,5,6].map(d => {
+        const hasLock = locks.some(l => l[1] === d - 1);
+        return `<div class="board-day-header ${hasLock ? 'day-has-lock' : ''}">Day ${d}${hasLock ? ' 🔒' : ''}</div>`;
+      }).join("")}
       ${state.players.map((player, pi) => boardRowHTML(state, pi, player)).join("")}
     </div>
   </div>
@@ -537,6 +658,39 @@ function gameHTML(state) {
           ).join("")}
     </div>
   </div>
+</div>`;
+}
+
+function buildBankModal(state) {
+  const ctx = state.action_ctx || {};
+  const strength = ctx.strength || "normal";
+  const pts = strength === "strong" ? 2 : 1;
+  return `
+<div class="bank-modal-overlay" id="bank-modal">
+  <div class="bank-modal">
+    <h3 class="bank-modal-title">Beach Card Flipped!</h3>
+    <p class="bank-modal-desc">
+      Bank <strong style="color:#FFD700">+${pts} pts</strong> now (immediate, but lose day-matching bonus).<br>
+      Or keep eligible for day-matching bonus (risky if flipped down later).
+    </p>
+    <div class="bank-modal-btns">
+      <button class="btn btn-primary" id="btn-bank-yes">Bank (+${pts} pts)</button>
+      <button class="btn btn-outline" id="btn-bank-no">Don't Bank (day-match)</button>
+    </div>
+  </div>
+</div>`;
+}
+
+function buildLockDayPicker(state) {
+  if (!state.pending_action || state.current_player_idx !== MY_IDX) return "";
+  if (state.pending_action !== "lock_pick_day") return "";
+  const strength = (state.action_ctx || {}).strength || "normal";
+  return `
+<div class="lock-day-picker" id="lock-day-picker">
+  <span class="lock-day-label">Lock which day? ${strength === 'strong' ? '(ALL cards on that day)' : '(choose 2 cards after)'}</span>
+  ${[1,2,3,4,5,6].map(d =>
+    `<button class="btn lock-day-btn" data-day="${d}">Day ${d}</button>`
+  ).join("")}
 </div>`;
 }
 
@@ -572,86 +726,179 @@ function cardHTML(state, pi, day, card) {
   const ctx = state.action_ctx || {};
   const isActive = pi === state.current_player_idx;
   const arrivals = state.arrivals || {};
+  const locks = state.locks || [];
+  const isLocked = locks.some(l => l[0] === pi && l[1] === day - 1);
 
   // Decide visual state class
   let stateCls = "";
-  if (!action) {
-    if (isActive && !card.face_up && isMyTurn) stateCls = "flippable";
+  if (!action || action === "bank_decision" || action === "lock_pick_day") {
+    if (action === "bank_decision") {
+      stateCls = "dimmed";
+    } else if (!action && isActive && !card.face_up && isMyTurn) {
+      stateCls = "flippable";
+    }
   } else if (isMyTurn) {
     const isOther = !isMe;
     const isOwn   = isMe;
     let valid = false;
 
-    if (action === "flip_other_down")  valid = isOther && card.face_up;
-    if (action === "flip_own_down")    valid = isOwn && card.face_up;
-    if (action === "swap_other_1")     valid = isOther;
-    if (action === "swap_other_2") {
-      if (pi === ctx.first_pi && day === ctx.first_day) stateCls = "selected-first";
-      else valid = pi === ctx.first_pi && day !== ctx.first_day;
-    }
-    if (action === "swap_own_1")  valid = isOwn;
+    if (action === "flip_other_down")  valid = isOther && card.face_up && !isLocked;
+    if (action === "flip_own_down")    valid = isOwn && card.face_up && !isLocked;
+
+    if (action === "swap_own_1")       valid = isOwn && !isLocked;
     if (action === "swap_own_2") {
       if (isOwn && day === ctx.first_day) stateCls = "selected-first";
-      else valid = isOwn && day !== ctx.first_day;
+      else valid = isOwn && day !== ctx.first_day && !isLocked;
     }
-    if (action === "change_arr_other") {
+
+    if (action === "adj_swap_own") valid = isOwn && !isLocked;
+    if (action === "adj_swap_own_dir") {
+      const src = ctx.adj_day;
+      if (isOwn && day === src) stateCls = "selected-first";
+      else {
+        const adj = [(src - 2) % 6 + 1, src % 6 + 1];
+        valid = isOwn && adj.includes(day) && !isLocked;
+      }
+    }
+
+    if (action === "swap_other_1")    valid = isOther && !isLocked;
+    if (action === "swap_other_2") {
+      if (pi === ctx.first_pi && day === ctx.first_day) stateCls = "selected-first";
+      else valid = pi === ctx.first_pi && day !== ctx.first_day && !isLocked;
+    }
+
+    if (action === "adj_swap_other") valid = isOther && !isLocked;
+    if (action === "adj_swap_other_dir") {
+      const srcPi = ctx.adj_pi;
+      const src = ctx.adj_day;
+      if (pi === srcPi && day === src) stateCls = "selected-first";
+      else {
+        const adj = [(src - 2) % 6 + 1, src % 6 + 1];
+        valid = pi === srcPi && adj.includes(day) && !isLocked;
+      }
+    }
+
+    if (action === "lock_pick_2") {
+      const lockDay = ctx.lock_day;
+      const picks = ctx.lock_picks || [];
+      const alreadyPicked = picks.some(p => p[0] === pi && p[1] === day - 1);
+      if (alreadyPicked) stateCls = "selected-first";
+      else valid = day === lockDay && !isLocked;
+    }
+
+    if (action === "switch_arrival_pick") {
       const k = `${day},${card.card_type}`;
-      valid = isOther && card.face_up && (arrivals[k] || []).length >= 2;
+      valid = card.face_up && (arrivals[k] || []).length >= 2;
     }
-    if (action === "change_arr_own") {
-      const k = `${day},${card.card_type}`;
-      valid = isOwn && card.face_up && (arrivals[k] || []).length >= 2;
+    if (action === "switch_arrival_swap_1") {
+      const sw_day = ctx.sw_day;
+      const sw_ct = ctx.sw_ct;
+      const k = `${sw_day},${sw_ct}`;
+      valid = day === sw_day && pi !== -1 && (arrivals[k] || []).includes(pi);
     }
-    if (action === "set_arrival") valid = false;
+    if (action === "switch_arrival_swap_2") {
+      const sw_day = ctx.sw_day;
+      const sw_ct = ctx.sw_ct;
+      const k = `${sw_day},${sw_ct}`;
+      const first = ctx.swap_first_pi;
+      if (pi === first && day === sw_day) stateCls = "selected-first";
+      else valid = day === sw_day && (arrivals[k] || []).includes(pi) && pi !== first;
+    }
+
+    if (action === "set_arrival" || action === "switch_arrival_reorder") valid = false;
 
     if (!stateCls) stateCls = valid ? "target-valid" : "dimmed";
   }
+
+  // Lock indicator
+  const lockBadge = isLocked ? '<span class="lock-badge">🔒</span>' : "";
 
   // Opponent face-down: mystery card
   if (!card.face_up && !isMe) {
     return `
 <button class="card face-down other ${stateCls}"
         data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
+  ${lockBadge}
   <span class="mystery-symbol">?</span>
   <span class="mystery-label">face down</span>
 </button>`;
   }
 
-  // Own face-down: show full card info, styled differently
+  // Own face-down: show full card info
   if (!card.face_up && isMe) {
     const ct = card.card_type;
+    const strength = card.strength || "normal";
+    const isStrong = strength === "strong";
+    const abilityText = isStrong ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal;
     return `
 <button class="card face-down own ct-${ct} ${stateCls}"
         data-pi="${pi}" data-day="${day}">
+  ${lockBadge}
   <span class="card-face-down-badge">face down</span>
   <div class="card-header">
     <span class="card-num">${ct}</span>
     <span class="card-name">${LOCATION_NAMES[ct]}</span>
   </div>
+  <div class="strength-badge-card ${isStrong ? 'strength-strong' : 'strength-normal'}">${isStrong ? '★ Strong' : 'Normal'}</div>
   <hr class="card-divider"/>
-  <div class="card-ability">${CARD_ABILITIES[ct]}</div>
-  <div class="card-scoring">${CARD_SCORING[ct] || "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1"}</div>
+  <div class="card-ability">${abilityText}</div>
+  <div class="card-scoring">${CARD_SCORING[ct]}</div>
+  ${day === ct ? '<div class="match-day-hint">✓ Match Day!</div>' : ''}
 </button>`;
   }
 
   // Face-up card (anyone's)
   const ct = card.card_type;
+  const strength = card.strength || "normal";
+  const isStrong = strength === "strong";
+  const isBanked = card.banked || false;
+  const abilityText = isStrong ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal;
   const arrLabel = { 1: "▲ 1st arrival", 2: "■ 2nd arrival", 3: "▼ 3rd arrival" };
   return `
 <button class="card face-up ct-${ct} ${stateCls}"
         data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
+  ${lockBadge}
+  ${isBanked ? '<span class="bank-badge">💰 Banked</span>' : ""}
   <div class="card-header">
     <span class="card-num">${ct}</span>
     <span class="card-name">${LOCATION_NAMES[ct]}</span>
   </div>
+  <div class="strength-badge-card ${isStrong ? 'strength-strong' : 'strength-normal'}">${isStrong ? '★ Strong' : 'Normal'}</div>
   ${card.arrival ? `<div class="card-arrival">${arrLabel[card.arrival] || `#${card.arrival}`}</div>` : ""}
   <hr class="card-divider"/>
-  <div class="card-ability">${CARD_ABILITIES[ct]}</div>
-  <div class="card-scoring">${CARD_SCORING[ct] || "2♥ 1st+1 · 2nd+2<br>3♥ 3rd−1"}</div>
+  <div class="card-ability">${abilityText}</div>
+  <div class="card-scoring">${CARD_SCORING[ct]}</div>
+  ${day === ct ? '<div class="match-day-hint">✓ Match Day!</div>' : ''}
 </button>`;
 }
 
 function bindGame(state) {
+  // Bank decision buttons
+  if (state.pending_action === "bank_decision" && state.current_player_idx === MY_IDX) {
+    document.getElementById("btn-bank-yes")?.addEventListener("click", async () => {
+      G = await apiPost(gameUrl("bank_decision"), { bank: true });
+      render(G);
+    });
+    document.getElementById("btn-bank-no")?.addEventListener("click", async () => {
+      G = await apiPost(gameUrl("bank_decision"), { bank: false });
+      render(G);
+    });
+  }
+
+  // Lock day picker buttons
+  if (state.pending_action === "lock_pick_day" && state.current_player_idx === MY_IDX) {
+    document.querySelectorAll(".lock-day-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const day = parseInt(btn.dataset.day);
+        const resp = await apiPost(gameUrl("action"), { day });
+        const result = resp.action_result || {};
+        if (result.error) { showMsg(result.error, "error"); return; }
+        G = resp; render(G);
+        if (result.message) showMsg(result.message, "success");
+      });
+    });
+  }
+
   document.querySelectorAll(".card").forEach(btn => {
     if (!btn.disabled) {
       btn.addEventListener("click", () => handleCardClick(+btn.dataset.pi, +btn.dataset.day));
@@ -672,10 +919,35 @@ function bindGame(state) {
 }
 
 async function handleCardClick(pi, day) {
-  if (MY_IDX !== G.current_player_idx && !G.pending_action) {
+  const action = G.pending_action;
+
+  if (action === "bank_decision") return; // handled by bank buttons
+  if (action === "lock_pick_day") return; // handled by day picker buttons
+
+  if (!action && MY_IDX !== G.current_player_idx) {
     return; // not our turn, ignore
   }
-  if (G.pending_action) {
+
+  if (action) {
+    // Check if this is a switch_arrival flow needing special modal
+    if (action === "switch_arrival_pick") {
+      const resp = await apiPost(gameUrl("action"), { player_idx: pi, day });
+      const result = resp.action_result || {};
+      if (result.error) { showMsg(result.error, "error"); return; }
+      if (result.needs_position && result.arrival_info) {
+        G = resp; render(G);
+        if (result.arrival_info.reorder) {
+          showReorderModal(result.arrival_info);
+        } else {
+          showSwapArrivalModal(result.arrival_info);
+        }
+        return;
+      }
+      G = resp; render(G);
+      if (result.message) showMsg(result.message, "success");
+      return;
+    }
+
     const resp = await apiPost(gameUrl("action"), { player_idx: pi, day });
     const result = resp.action_result || {};
     if (result.error) { showMsg(result.error, "error"); return; }
@@ -690,7 +962,9 @@ async function handleCardClick(pi, day) {
     if (pi !== MY_IDX) return;
     const resp = await apiPost(gameUrl("flip"), { day });
     G = resp; render(G);
-    if (G.action_message) showMsg(G.action_message);
+    if (G.action_message && G.pending_action && G.pending_action !== "bank_decision") {
+      showMsg(G.action_message);
+    }
   }
 }
 
@@ -731,6 +1005,87 @@ function showArrivalModal(info) {
   };
 }
 
+/* ── reorder modal (type 4 strong) ──────────────────────────────────────── */
+function showReorderModal(info) {
+  document.getElementById("modal-title").textContent =
+    `Reorder Arrivals: ${info.location} on Day ${info.day}`;
+  document.getElementById("modal-sub").textContent =
+    "Drag or click to set your desired arrival order:";
+
+  const pidxs = info.arrival_pidxs || [];
+  const names = info.arrival_list || [];
+  const opts = document.getElementById("modal-options");
+  opts.innerHTML = `<p style="font-size:.78rem;color:#CCAAFF;margin-bottom:8px">Assign new arrival position for each player:</p>`;
+
+  // Simple UI: numbered radio buttons for each player
+  const assignments = {};
+  pidxs.forEach((pidx, i) => {
+    const div = document.createElement("div");
+    div.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;background:#2a1a4e;padding:8px;border-radius:6px";
+    div.innerHTML = `<span style="flex:1;color:#FFD700">${names[i]}</span>
+      <span style="font-size:.8rem;color:#CCAAFF">Position:</span>
+      ${pidxs.map((_, j) =>
+        `<label style="display:flex;align-items:center;gap:3px;font-size:.78rem">
+          <input type="radio" name="pos-${pidx}" value="${j+1}" ${j === i ? "checked" : ""}> ${j+1}
+        </label>`
+      ).join("")}`;
+    opts.appendChild(div);
+    assignments[pidx] = i + 1;
+  });
+
+  document.getElementById("modal-overlay").classList.remove("hidden");
+  document.getElementById("modal-confirm").style.display = "";
+  document.getElementById("modal-cancel").textContent = "Cancel";
+
+  document.getElementById("modal-confirm").onclick = async () => {
+    // Build new order from radio selections
+    const newOrder = [];
+    const posMap = {};
+    pidxs.forEach(pidx => {
+      const sel = document.querySelector(`input[name="pos-${pidx}"]:checked`);
+      const pos = sel ? parseInt(sel.value) : 1;
+      posMap[pos] = pidx;
+    });
+    // Build in position order
+    const positions = Object.keys(posMap).map(Number).sort((a,b)=>a-b);
+    for (const pos of positions) {
+      newOrder.push(posMap[pos]);
+    }
+    // Fallback: if not all positions unique, use original order
+    const finalOrder = newOrder.length === pidxs.length ? newOrder : [...pidxs];
+    closeModal();
+    const resp = await apiPost(gameUrl("set_reorder"), { new_order: finalOrder });
+    const result = resp.action_result || {};
+    if (result.error) { showMsg(result.error, "error"); return; }
+    G = resp; render(G);
+    if (result.message) showMsg(result.message, "success");
+  };
+  document.getElementById("modal-cancel").onclick = async () => {
+    closeModal();
+    G = await apiPost(gameUrl("cancel"));
+    render(G);
+  };
+}
+
+/* ── swap arrival modal (type 4 normal) ─────────────────────────────────── */
+function showSwapArrivalModal(info) {
+  document.getElementById("modal-title").textContent =
+    `Swap Arrivals: ${info.location} on Day ${info.day}`;
+  document.getElementById("modal-sub").textContent =
+    "Click two players to swap their arrival positions:";
+
+  const pidxs = info.arrival_pidxs || [];
+  const names = info.arrival_list || [];
+  const opts = document.getElementById("modal-options");
+  opts.innerHTML = "";
+
+  // The arrival swap uses the action endpoint with clicks
+  // Close modal and let user click on the board
+  closeModal();
+  // Show a guide message
+  showMsg("Click a player card at that location to swap arrivals.", "");
+}
+
 function showScoresModal(state) {
   const scores = state.scores || {};
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
@@ -748,7 +1103,7 @@ function showScoresModal(state) {
     </div>
     <div style="font-size:.78rem;color:#CCAAFF;font-weight:700;margin-bottom:5px">Breakdown:</div>
     ${arrivals.map(r => {
-      const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+1, 2nd+2" : "3rd −1";
+      const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+pts, 2nd+pts" : "3rd penalty";
       return `<div style="font-size:.76rem;color:#CCCCFF;padding:2px 0">
         Day ${r.day} – ${r.location}: ${r.players.join(" → ")} [${note}]
       </div>`;
@@ -770,6 +1125,40 @@ function endHTML(state) {
   const ranked   = Object.entries(scores).sort((a, b) => b[1] - a[1]);
   const medals   = ["🥇", "🥈", "🥉"];
   const arrivals = state.arrivals_display || [];
+  const locks    = state.locks || [];
+
+  // Compute day-match bonuses for display
+  const dayMatchRows = [];
+  for (let ct = 1; ct <= 6; ct++) {
+    const matching = state.players
+      .map((p, pi) => {
+        const card = p.cards && p.cards[ct - 1];
+        if (card && card.card_type === ct && card.face_up && !card.banked) {
+          return { name: p.name, strength: card.strength || "normal" };
+        }
+        return null;
+      })
+      .filter(Boolean);
+    if (matching.length === 1) {
+      dayMatchRows.push({ ct, players: matching, bonus: -1, note: `−1 (alone on Day ${ct})` });
+    } else if (matching.length >= 2) {
+      dayMatchRows.push({
+        ct, players: matching,
+        note: matching.map(m => `${m.name}: ${m.strength === 'strong' ? '+1' : '+2'}`).join(", ")
+      });
+    }
+  }
+
+  // Compute bank rows
+  const bankRows = [];
+  state.players.forEach(p => {
+    (p.cards || []).forEach(card => {
+      if (card && card.banked && card.face_up) {
+        const pts = card.strength === "strong" ? 2 : 1;
+        bankRows.push({ name: p.name, ct: card.card_type, pts });
+      }
+    });
+  });
 
   return `
 <div class="end-screen">
@@ -782,20 +1171,20 @@ function endHTML(state) {
         <span class="podium-score">${pts >= 0 ? "+" : ""}${pts} pts</span>
       </div>`).join("")}
   </div>
+
   <div class="breakdown">
     <h3>Date Results</h3>
     ${arrivals.map(r => {
       const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[4,2,-2],5:[3,3,-2],6:[1,1,0]})[r.card_type] || [1,2,-1];
       let note, cls;
       if (r.n === 1) {
-        const solo = r.card_type === 5;
-        note = solo ? "solo — −1 pt (Beach penalty)" : "solo — no points";
-        cls  = solo ? "bad" : "neutral";
+        note = "solo — no arrival points";
+        cls  = "neutral";
       } else if (r.n === 2) {
         note = `1st: ${pts[0]>=0?"+":""}${pts[0]} · 2nd: ${pts[1]>=0?"+":""}${pts[1]}`;
         cls  = "good";
       } else {
-        note = `3rd wheel: ${pts[2]}`;
+        note = `1st:+${pts[0]} 2nd:+${pts[1]} 3rd:${pts[2]}`;
         cls  = "bad";
       }
       return `<div class="breakdown-row">
@@ -806,6 +1195,31 @@ function endHTML(state) {
       </div>`;
     }).join("")}
   </div>
+
+  ${dayMatchRows.length > 0 ? `
+  <div class="breakdown" style="margin-top:16px">
+    <h3>Day-Matching Bonuses</h3>
+    ${dayMatchRows.map(r => `
+      <div class="breakdown-row">
+        <span class="bday">Type ${r.ct}</span>
+        <span class="bloc">Day ${r.ct}</span>
+        <span class="bplrs">${r.players.map(m=>m.name).join(", ")}</span>
+        <span class="bscore ${r.bonus === -1 ? 'bad' : 'good'}">${r.note}</span>
+      </div>`).join("")}
+  </div>` : ""}
+
+  ${bankRows.length > 0 ? `
+  <div class="breakdown" style="margin-top:16px">
+    <h3>Banked Points</h3>
+    ${bankRows.map(r => `
+      <div class="breakdown-row">
+        <span class="bday">${r.name}</span>
+        <span class="bloc">${LOCATION_NAMES[r.ct]}</span>
+        <span class="bplrs">Beach card banked</span>
+        <span class="bscore good">+${r.pts} pts</span>
+      </div>`).join("")}
+  </div>` : ""}
+
   <button id="play-again" class="btn btn-primary">▶ Play Again</button>
   ${(state.move_log || []).length > 0 ? `
   <div class="move-log-panel end-log">

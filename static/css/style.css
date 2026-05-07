@@ -519,3 +519,151 @@ body {
 .start-section { display: flex; align-items: center; margin-top: 18px; flex-wrap: wrap; gap: 8px; }
 .start-btn { padding: 12px 30px; font-size: 1rem; }
 .start-hint { color: #FF8080; font-size: .82rem; width: 100%; margin-top: 2px; }
+
+/* ── draft screen ─────────────────────────────────────────────────────────── */
+.draft-screen { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+
+.draft-status-bar {
+  text-align: center; padding: 10px 16px; border-radius: 8px;
+  background: #1e1038; margin: 12px 0 8px; font-size: .95rem;
+}
+.draft-your-turn { color: #FFD700; font-weight: 700; font-size: 1.05rem; }
+.draft-waiting   { color: #CCAAFF; }
+.draft-done      { color: #80FF80; font-weight: 700; }
+
+.draft-snake-order {
+  display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+  margin: 8px 0; padding: 8px; background: #160c28; border-radius: 8px;
+}
+.draft-order-item {
+  font-size: .72rem; padding: 3px 8px; border-radius: 4px;
+  background: #2a1a4e; color: #9980cc;
+}
+.draft-order-item.draft-order-current {
+  background: #FFD700; color: #1a0a2e; font-weight: 800;
+}
+.draft-order-item.draft-order-past {
+  background: #1a1030; color: #4a3a6a; text-decoration: line-through;
+}
+
+.draft-my-picks {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  background: #1a0f30; border-radius: 8px; padding: 8px 14px; margin: 8px 0;
+  font-size: .85rem;
+}
+.draft-section-label { color: #CCAAFF; font-weight: 700; white-space: nowrap; }
+.draft-picked-card {
+  padding: 4px 10px; border-radius: 6px; font-weight: 700;
+  font-size: .8rem; color: #1a0a2e;
+}
+.draft-picked-card.ct-1{background:#FFAAAA} .draft-picked-card.ct-2{background:#AAFFCC}
+.draft-picked-card.ct-3{background:#AACCFF} .draft-picked-card.ct-4{background:#CCFFAA}
+.draft-picked-card.ct-5{background:#FFEEAA} .draft-picked-card.ct-6{background:#DDAAFF}
+.draft-none { color: #5a4a7a; font-style: italic; font-size: .82rem; }
+
+.draft-pool-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: 12px; margin: 12px 0;
+}
+@media (max-width: 640px) { .draft-pool-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.draft-card {
+  border-radius: 10px; border: 2px solid transparent;
+  display: flex; flex-direction: column; align-items: center;
+  padding: 10px 8px; gap: 4px; cursor: pointer; font-family: inherit;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+  min-height: 160px; position: relative; text-align: center;
+  color: #1a0a2e;
+}
+.draft-card.ct-1{background:#FFAAAA} .draft-card.ct-2{background:#AAFFCC}
+.draft-card.ct-3{background:#AACCFF} .draft-card.ct-4{background:#CCFFAA}
+.draft-card.ct-5{background:#FFEEAA} .draft-card.ct-6{background:#DDAAFF}
+
+.draft-card-selectable { cursor: pointer; }
+.draft-card-selectable:hover { transform: translateY(-4px); border-color: #FFD700; box-shadow: 0 0 14px #FFD70088; }
+
+.draft-card-taken { opacity: .35; cursor: not-allowed; filter: grayscale(60%); }
+.draft-card-taken-label {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  background: rgba(0,0,0,.65); color: #FF8080; font-weight: 800;
+  font-size: .9rem; padding: 4px 12px; border-radius: 6px; letter-spacing: .05em;
+}
+
+.draft-card-strength { font-size: .65rem; font-weight: 800; color: #8040FF; text-transform: uppercase; letter-spacing: .06em; }
+.draft-card-num  { font-size: 1.6rem; font-weight: 900; line-height: 1; }
+.draft-card-name { font-size: .82rem; font-weight: 700; }
+.draft-card-ability-s { font-size: .65rem; line-height: 1.35; color: rgba(0,0,0,.8); }
+.draft-card-normal-hint { font-size: .6rem; color: rgba(0,0,0,.55); font-style: italic; }
+.draft-card-score { font-size: .62rem; font-weight: 700; background: rgba(0,0,0,.12); border-radius: 4px; padding: 2px 6px; }
+.draft-card-matchday { font-size: .6rem; color: rgba(0,0,0,.5); margin-top: 2px; }
+
+/* ── strength badges ──────────────────────────────────────────────────────── */
+.strength-badge {
+  display: inline-block; padding: 2px 7px; border-radius: 4px;
+  font-size: .65rem; font-weight: 800; letter-spacing: .04em;
+  text-transform: uppercase; margin: 2px 0;
+}
+.strength-strong { background: #8040FF; color: #fff; }
+.strength-normal { background: #3a2a5e; color: #CC99FF; }
+
+.strength-badge-card {
+  font-size: .6rem; font-weight: 800; padding: 1px 5px; border-radius: 3px;
+  letter-spacing: .04em; align-self: flex-start; margin: 1px 0;
+}
+.strength-badge-card.strength-strong { background: rgba(128,64,255,.8); color: #fff; }
+.strength-badge-card.strength-normal { background: rgba(0,0,0,.2); color: rgba(0,0,0,.65); }
+.card.face-down.own .strength-badge-card.strength-normal { background: rgba(255,255,255,.07); color: #9980cc; }
+
+/* ── lock badge ───────────────────────────────────────────────────────────── */
+.lock-badge {
+  position: absolute; top: 3px; left: 4px;
+  font-size: .75rem; line-height: 1;
+}
+.day-has-lock { background: #2a1a4e; border: 1px solid #6030a0; }
+
+/* ── bank badge ───────────────────────────────────────────────────────────── */
+.bank-badge {
+  position: absolute; top: 3px; right: 22px;
+  font-size: .62rem; background: #2a5020; color: #80FF80;
+  padding: 1px 4px; border-radius: 3px; font-weight: 700;
+}
+
+/* ── match day hint ───────────────────────────────────────────────────────── */
+.match-day-hint {
+  font-size: .6rem; color: #60B060; font-weight: 700;
+  background: rgba(0,80,0,.15); border-radius: 3px; padding: 1px 4px;
+  align-self: flex-start; margin-top: 1px;
+}
+.card.face-down.own .match-day-hint { color: #80D080; background: rgba(0,80,0,.2); }
+
+/* ── lock day picker ──────────────────────────────────────────────────────── */
+.lock-day-picker {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; background: #1e1038; border-bottom: 1px solid #3a1a6a;
+  flex-shrink: 0;
+}
+.lock-day-label { color: #FFB060; font-style: italic; font-size: .88rem; }
+.lock-day-btn {
+  padding: 6px 14px; background: #3a2a6e; color: #CCAAFF;
+  border: 1px solid #5a3a8e; border-radius: 6px; cursor: pointer;
+  font-size: .88rem; transition: background .12s, border-color .12s;
+}
+.lock-day-btn:hover { background: #5a3a8e; border-color: #8040FF; color: #fff; }
+
+/* ── bank decision modal ──────────────────────────────────────────────────── */
+.bank-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.7);
+  display: flex; align-items: center; justify-content: center; z-index: 90;
+}
+.bank-modal {
+  background: #1e1038; border: 2px solid #FFD700; border-radius: 14px;
+  padding: 24px 28px; max-width: 420px; text-align: center;
+}
+.bank-modal-title { color: #FFD700; font-size: 1.2rem; font-weight: 800; margin-bottom: 10px; }
+.bank-modal-desc  { color: #CCAAFF; font-size: .9rem; line-height: 1.5; margin-bottom: 18px; }
+.bank-modal-btns  { display: flex; gap: 12px; justify-content: center; }
+.bank-modal-btns .btn { padding: 10px 20px; }
+
+/* ── arrange screen strength hints ───────────────────────────────────────── */
+.lmatch { font-size: .6rem; opacity: .6; }
+.dmatch { font-size: .6rem; color: #5a8a5a; margin-top: 2px; }
