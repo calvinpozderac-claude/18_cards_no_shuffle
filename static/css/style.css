@@ -697,3 +697,70 @@ body {
 
 /* ── Restaurant glow (face-up ct-4) ──────────────────────────────────────── */
 .card.face-up.ct-4 { box-shadow: 0 0 12px rgba(190,242,100,.3); }
+
+/* ── theme toggle button ──────────────────────────────────────────────────── */
+.theme-toggle-btn {
+  position: fixed; bottom: 20px; right: 20px; z-index: 200;
+  width: 40px; height: 40px; border-radius: 50%;
+  background: var(--surface); border: 1px solid var(--border-hi);
+  color: var(--text-2); font-size: 1rem;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: var(--shadow-sm);
+  transition: background .15s, border-color .15s, box-shadow .15s, transform .12s;
+  font-family: inherit; line-height: 1;
+}
+.theme-toggle-btn:hover {
+  background: var(--surface-3); border-color: var(--accent-hi);
+  box-shadow: 0 0 0 3px var(--accent-glow), var(--shadow-sm);
+  transform: scale(1.1);
+}
+.topbar-theme-btn {
+  background: var(--surface-2); border: 1px solid var(--border-hi);
+  border-radius: var(--radius-sm); color: var(--text-2);
+  padding: 4px 9px; font-size: .82rem; cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s;
+  font-family: inherit; line-height: 1.4;
+}
+.topbar-theme-btn:hover { background: var(--surface-3); border-color: var(--accent-hi); color: var(--text); }
+
+/* ── light mode tokens ────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --bg:          #f3f4f9;
+  --surface:     #ffffff;
+  --surface-2:   #f0f1f8;
+  --surface-3:   #e6e8f4;
+  --border:      #d6d9ea;
+  --border-hi:   #b4b9d8;
+  --accent:      #5b21b6;
+  --accent-hi:   #6d28d9;
+  --accent-glow: rgba(109,40,217,.16);
+  --gold:        #92400e;
+  --gold-hi:     #b45309;
+  --gold-glow:   rgba(180,83,9,.16);
+  --cyan:        #0e7490;
+  --cyan-hi:     #0891b2;
+  --green:       #065f46;
+  --green-hi:    #059669;
+  --red:         #9f1239;
+  --red-hi:      #be123c;
+  --text:        #0d0d1c;
+  --text-2:      #3a3a62;
+  --text-muted:  #8080aa;
+  --shadow:      0 4px 24px rgba(0,0,0,.09);
+  --shadow-sm:   0 2px 8px rgba(0,0,0,.06);
+}
+
+/* suppress neon glows on light backgrounds */
+[data-theme="light"] .title              { text-shadow: none; }
+[data-theme="light"] .room-code-value    { text-shadow: none; }
+[data-theme="light"] .end-screen h1      { text-shadow: none; }
+[data-theme="light"] .draft-order-item.draft-order-current { box-shadow: none; }
+[data-theme="light"] .bank-modal         { box-shadow: var(--shadow); }
+[data-theme="light"] #modal-overlay,
+[data-theme="light"] .bank-modal-overlay { background: rgba(0,0,0,.25); backdrop-filter: blur(3px); }
+[data-theme="light"] .btn-primary        { box-shadow: 0 2px 10px rgba(109,40,217,.2); }
+[data-theme="light"] .mcts-rollout-group { background: rgba(14,116,144,.07); border-color: rgba(14,116,144,.22); }
+[data-theme="light"] .ai-badge.mcts-badge{ background: rgba(14,116,144,.09); border-color: rgba(14,116,144,.25); color: var(--cyan); }
+[data-theme="light"] .lobby-err          { background: rgba(159,18,57,.07); border-color: rgba(159,18,57,.2); }
+[data-theme="light"] .podium-row.rank-1  { background: rgba(180,83,9,.06); box-shadow: none; }
+[data-theme="light"] .strength-badge-card.strength-strong { background: rgba(109,40,217,.18); }

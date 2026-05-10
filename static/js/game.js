@@ -10,6 +10,21 @@ const CARD_SCORING = {
 
 const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";
 
+/* ── theme ───────────────────────────────────────────────────────────────── */
+function currentTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+function applyTheme(theme) {
+  if (theme === "light") document.documentElement.setAttribute("data-theme", "light");
+  else document.documentElement.removeAttribute("data-theme");
+  localStorage.setItem("dtbtw_theme", theme);
+  document.querySelectorAll(".theme-toggle-btn, .topbar-theme-btn").forEach(el => {
+    el.textContent = theme === "light" ? "🌙" : "☀️";
+    el.title = theme === "light" ? "Switch to dark mode" : "Switch to light mode";
+  });
+}
+function toggleTheme() { applyTheme(currentTheme() === "light" ? "dark" : "light"); }
+
 /* ── api ─────────────────────────────────────────────────────────────────── */
 async function apiGet(url) {
   const r = await fetch(url);
@@ -58,6 +73,13 @@ function clearRoom() {
 
 /* ── entry ───────────────────────────────────────────────────────────────── */
 document.addEventListener("DOMContentLoaded", async () => {
+  // Inject floating theme toggle (persists across all screen renders)
+  const themeBtn = document.createElement("button");
+  themeBtn.className = "theme-toggle-btn";
+  themeBtn.addEventListener("click", toggleTheme);
+  document.body.appendChild(themeBtn);
+  applyTheme(currentTheme()); // sync button label to current theme
+
   if (GAME_ID && TOKEN) {
     // Landed on /game/<id>/<token> — normal game flow
     G = await apiGet(gameUrl("state"));
@@ -608,6 +630,7 @@ function gameHTML(state) {
       ${isMyTurn ? "<strong style='color:#FFD700'>Your turn!</strong>" : `<strong>${turnPlayerName}</strong>'s turn`}
     </span>
     <div class="topbar-btns">
+      <button class="topbar-theme-btn" id="btn-theme" onclick="toggleTheme()"></button>
       <button class="btn btn-green" id="btn-scores">Scores</button>
       <button class="btn btn-red"   id="btn-end">End Game</button>
     </div>
@@ -873,6 +896,8 @@ function cardHTML(state, pi, day, card) {
 }
 
 function bindGame(state) {
+  applyTheme(currentTheme()); // sync topbar theme btn label after render
+
   // Bank decision buttons
   if (state.pending_action === "bank_decision" && state.current_player_idx === MY_IDX) {
     document.getElementById("btn-bank-yes")?.addEventListener("click", async () => {
