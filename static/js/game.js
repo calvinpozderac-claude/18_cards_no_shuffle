@@ -25,6 +25,34 @@ function applyTheme(theme) {
 }
 function toggleTheme() { applyTheme(currentTheme() === "light" ? "dark" : "light"); }
 
+/* ── card change tracking (for animations) ───────────────────────────────── */
+function snapshotCards(state) {
+  const snap = {};
+  (state.players || []).forEach((p, pi) => {
+    (p.cards || []).forEach((c, di) => {
+      snap[`${pi}-${di + 1}`] = { face_up: c.face_up, card_type: c.card_type };
+    });
+  });
+  return snap;
+}
+
+function animateCardChanges(prev, state) {
+  if (!prev) return;
+  document.querySelectorAll(".card[data-pi][data-day]").forEach(el => {
+    const pi  = +el.dataset.pi;
+    const day = +el.dataset.day;
+    const old = prev[`${pi}-${day}`];
+    if (!old) return;
+    const cur = (state.players[pi] || {}).cards?.[day - 1];
+    if (!cur) return;
+    if (old.face_up !== cur.face_up) {
+      el.classList.add("card-anim-flip");
+    } else if (old.card_type !== cur.card_type) {
+      el.classList.add("card-anim-swap");
+    }
+  });
+}
+
 /* ── api ─────────────────────────────────────────────────────────────────── */
 async function apiGet(url) {
   const r = await fetch(url);
@@ -366,6 +394,7 @@ async function roomRemove(playerId) {
 
 /* ── render dispatch ─────────────────────────────────────────────────────── */
 function render(state) {
+  const prevSnap = (G && G.phase === "game" && state.phase === "game") ? snapshotCards(G) : null;
   G = state;
   lastRenderKey = renderKey(state);
   const app = document.getElementById("app");
@@ -386,7 +415,7 @@ function render(state) {
     }
   } else if (state.phase === "game") {
     app.innerHTML = gameHTML(state);
-    bindGame(state);
+    bindGame(state, prevSnap);
   } else if (state.phase === "end") {
     stopPolling();
     app.innerHTML = endHTML(state);
@@ -895,8 +924,9 @@ function cardHTML(state, pi, day, card) {
 </button>`;
 }
 
-function bindGame(state) {
+function bindGame(state, prevSnap = null) {
   applyTheme(currentTheme()); // sync topbar theme btn label after render
+  animateCardChanges(prevSnap, state);
 
   // Bank decision buttons
   if (state.pending_action === "bank_decision" && state.current_player_idx === MY_IDX) {

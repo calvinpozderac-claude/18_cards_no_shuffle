@@ -698,6 +698,21 @@ body {
 /* ── Restaurant glow (face-up ct-4) ──────────────────────────────────────── */
 .card.face-up.ct-4 { box-shadow: 0 0 12px rgba(190,242,100,.3); }
 
+/* ── card animations ──────────────────────────────────────────────────────── */
+@keyframes card-flip-in {
+  0%   { transform: rotateY(90deg) scale(.9); opacity: 0; }
+  55%  { opacity: 1; }
+  100% { transform: rotateY(0deg) scale(1); opacity: 1; }
+}
+@keyframes card-swap-pop {
+  0%   { transform: scale(1) translateY(0); }
+  30%  { transform: scale(1.09) translateY(-6px); box-shadow: 0 8px 20px rgba(0,0,0,.3); }
+  65%  { transform: scale(.97) translateY(0); }
+  100% { transform: scale(1) translateY(0); }
+}
+.card-anim-flip { animation: card-flip-in .34s cubic-bezier(.25,.46,.45,.94) both; perspective: 600px; }
+.card-anim-swap { animation: card-swap-pop .3s ease-out both; }
+
 /* ── theme toggle button ──────────────────────────────────────────────────── */
 .theme-toggle-btn {
   position: fixed; bottom: 20px; right: 20px; z-index: 200;
@@ -764,3 +779,25 @@ body {
 [data-theme="light"] .lobby-err          { background: rgba(159,18,57,.07); border-color: rgba(159,18,57,.2); }
 [data-theme="light"] .podium-row.rank-1  { background: rgba(180,83,9,.06); box-shadow: none; }
 [data-theme="light"] .strength-badge-card.strength-strong { background: rgba(109,40,217,.18); }
+
+/* ── light mode card contrast ─────────────────────────────────────────────── */
+/* face-up cards need a visible edge against white backgrounds */
+[data-theme="light"] .card.face-up {
+  border-color: rgba(0,0,0,.22);
+  box-shadow: 0 2px 6px rgba(0,0,0,.1);
+}
+/* face-down cards need slight depth */
+[data-theme="light"] .card.face-down.other,
+[data-theme="light"] .card.face-down.own  { box-shadow: 0 1px 4px rgba(0,0,0,.09); }
+/* mystery symbol and label are too faint on white */
+[data-theme="light"] .mystery-symbol { opacity: .55; }
+[data-theme="light"] .mystery-label  { color: var(--text-2); }
+/* make interaction ring glows more visible on light backgrounds */
+[data-theme="light"] .card.flippable         { box-shadow: 0 0 0 3px rgba(180,83,9,.3); }
+[data-theme="light"] .card.flippable:hover   { box-shadow: 0 0 0 4px rgba(180,83,9,.38), 0 4px 14px rgba(0,0,0,.1); }
+[data-theme="light"] .card.target-valid      { box-shadow: 0 0 0 3px rgba(8,145,178,.3); }
+[data-theme="light"] .card.target-valid:hover{ box-shadow: 0 0 0 4px rgba(8,145,178,.38); }
+[data-theme="light"] .card.selected-first    { box-shadow: 0 0 0 3px rgba(139,92,246,.3); }
+/* day headers and board background */
+[data-theme="light"] .board-day-header       { background: var(--surface-3); border-color: var(--border); }
+[data-theme="light"] .card.face-up.ct-4      { box-shadow: 0 2px 6px rgba(0,0,0,.1); } /* override ct-4 glow */
