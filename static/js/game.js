@@ -3,9 +3,9 @@ const CARD_SCORING = {
   1: "1st+1 · 2nd+2 · 3rd−1",
   2: "1st+1 · 2nd+2 · 3rd−1",
   3: "1st+2 · 2nd+1 · 3rd−1",
-  4: "1st+4 · 2nd+2 · 3rd−2",
+  4: "1st+3 · 2nd+2 · 3rd−1",
   5: "1st+3 · 2nd+3 · 3rd−2",
-  6: "1st+1 · 2nd+1 · 3rd±0",
+  6: "1st+2 · 2nd+1 · 3rd±0",
 };
 
 const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";

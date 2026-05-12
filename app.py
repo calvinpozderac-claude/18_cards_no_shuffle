@@ -68,13 +68,14 @@ CARD_PTS = {
     1: (1, 2, -1),   # Coffee Shop  — late arrival best
     2: (1, 2, -1),   # Park         — late arrival best
     3: (2, 1, -1),   # Cinema       — early arrival best
-    4: (4, 2, -2),   # Restaurant   — early arrival best, big swings
-    5: (3, 3, -2),   # Beach        — 1st = 2nd, third wheel brutal
-    6: (1, 1,  0),   # Museum       — flat, no third-wheel penalty
+    4: (3, 2, -1),   # Restaurant   — race for 1st, softer penalty (was 4/2/-2)
+    5: (3, 3, -2),   # Beach        — 1st=2nd, third wheel brutal (coordination)
+    6: (2, 1,  0),   # Museum       — worth arriving early (was 1/1/0)
 }
 
-# Draft value estimates: strong card of this type
-DRAFT_VALUES = {4: 100, 5: 85, 3: 65, 2: 60, 1: 55, 6: 40}
+# Draft value estimates: strong card of this type (tuned after balance sim)
+# Restaurant and Beach are now equally desirable; Museum buffed.
+DRAFT_VALUES = {4: 80, 5: 80, 3: 65, 2: 60, 1: 55, 6: 60}
 
 # ── core game logic ───────────────────────────────────────────────────────────
 
@@ -650,7 +651,12 @@ def _mcts_flip_decision(state, pidx, rollouts):
             while sim["phase"] == "game" and steps < 30:
                 _smart_rollout_turn(sim)
                 steps += 1
-            totals[d] += _calculate_scores(sim).get(my_name, 0)
+            # Optimise relative score (own − avg opponent) — the true win objective
+            all_scores = _calculate_scores(sim)
+            my_score = all_scores.get(my_name, 0)
+            opp_scores = [v for k, v in all_scores.items() if k != my_name]
+            avg_opp = sum(opp_scores) / len(opp_scores) if opp_scores else 0
+            totals[d] += my_score - avg_opp
 
     return max(candidates, key=lambda d: totals[d])
 
@@ -710,26 +716,28 @@ def _ai_pick_flip(state, pidx, difficulty):
     def ct(d): return _card_at(player, d)["card_type"]
     def n_arr(d): return len(state["arrivals"].get(_key(d, ct(d)), []))
 
-    # Hard-veto: would become 3rd at cards with pts[2] <= -2 (Restaurant, Beach)
-    non_veto = [d for d in candidates if not (n_arr(d) >= 2 and CARD_PTS[ct(d)][2] <= -2)]
+    # Hard-veto: would become 3rd at Beach (−2 pts — uniquely brutal)
+    non_veto = [d for d in candidates if not (n_arr(d) >= 2 and ct(d) == 5)]
     pool = non_veto if non_veto else candidates
 
-    # Priority 1: Beach 2nd arrival (+3)
+    # Priority 1: Beach 2nd arrival (+3, matches Beach 1st)
     beach_2nd = [d for d in pool if ct(d) == 5 and n_arr(d) == 1]
     if beach_2nd: return random.choice(beach_2nd)
 
-    # Priority 2: Restaurant 1st arrival (+4)
+    # Priority 2: Restaurant 1st (+3) — tie with Beach 1st
     rest_1st = [d for d in pool if ct(d) == 4 and n_arr(d) == 0]
     if rest_1st: return random.choice(rest_1st)
 
-    # Priority 3: Restaurant 2nd arrival (+2)
-    rest_2nd = [d for d in pool if ct(d) == 4 and n_arr(d) == 1]
-    if rest_2nd: return random.choice(rest_2nd)
-
-    # Priority 4: Cinema 1st (+2) or Coffee Shop/Park 2nd (+2)
+    # Priority 3: Restaurant 2nd (+2), Museum 1st (+2), Cinema 1st (+2)
     good = [d for d in pool
-            if (ct(d) == 3 and n_arr(d) == 0) or (ct(d) in (1, 2) and n_arr(d) == 1)]
+            if (ct(d) == 4 and n_arr(d) == 1)
+            or (ct(d) == 6 and n_arr(d) == 0)
+            or (ct(d) == 3 and n_arr(d) == 0)]
     if good: return random.choice(good)
+
+    # Priority 4: Coffee Shop / Park 2nd (+2)
+    cp_2nd = [d for d in pool if ct(d) in (1, 2) and n_arr(d) == 1]
+    if cp_2nd: return random.choice(cp_2nd)
 
     # Priority 5: any 2nd arrival
     second = [d for d in pool if n_arr(d) == 1]
