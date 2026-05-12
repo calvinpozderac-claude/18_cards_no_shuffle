@@ -73,6 +73,9 @@ CARD_PTS = {
     6: (1, 1,  0),   # Museum       — flat, no third-wheel penalty
 }
 
+# Draft value estimates: strong card of this type
+DRAFT_VALUES = {4: 100, 5: 85, 3: 65, 2: 60, 1: 55, 6: 40}
+
 # ── core game logic ───────────────────────────────────────────────────────────
 
 def _card_at(player, day):
@@ -359,6 +362,38 @@ def _log(state, msg):
 
 # ── draft helpers ─────────────────────────────────────────────────────────────
 
+def _ai_draft_pick(state, pidx):
+    """Choose a card type to draft using weighted random based on DRAFT_VALUES."""
+    pool = state["draft_pool"]
+    if not pool:
+        return None
+    # Get card types already drafted by opponents (to detect potential conflicts)
+    opp_drafted = set()
+    for i, p in enumerate(state["players"]):
+        if i != pidx:
+            for c in p.get("draft_cards", []):
+                opp_drafted.add(c["card_type"])
+    # Use squared weights for emphasis but not fully deterministic
+    weights = []
+    types = []
+    for card in pool:
+        ct = card["card_type"]
+        val = DRAFT_VALUES.get(ct, 50)
+        # Slight preference for types not yet taken (less competition)
+        if ct not in opp_drafted:
+            val = int(val * 1.1)
+        weights.append(val * val)
+        types.append(ct)
+    total = sum(weights)
+    r = random.random() * total
+    cumulative = 0
+    for ct, w in zip(types, weights):
+        cumulative += w
+        if r <= cumulative:
+            return ct
+    return types[-1]
+
+
 def _process_draft_picks(game):
     """Auto-play consecutive AI draft picks until a human's turn or draft done."""
     state = game["state"]
@@ -375,12 +410,12 @@ def _process_draft_picks(game):
         cur_drafter = state["draft_order"][state["draft_pick_idx"]]
         if cur_drafter not in ai_set:
             break
-        # AI auto-picks randomly from draft pool
+        # AI picks using value-weighted draft selection
         pool = state["draft_pool"]
         if not pool:
             break
-        pick = random.choice(pool)
-        _do_draft_pick(state, cur_drafter, pick["card_type"])
+        ct = _ai_draft_pick(state, cur_drafter)
+        _do_draft_pick(state, cur_drafter, ct)
         i += 1
     # If draft complete, assign normal cards and process AI arrangements
     if state["phase"] == "arrangement":
@@ -550,6 +585,28 @@ def _rollout_take_turn(state):
     _advance_turn(state)
 
 
+def _smart_rollout_turn(state):
+    """Play one heuristic-guided turn in a rollout simulation (no logging)."""
+    if state["phase"] != "game":
+        return
+    pidx = state["current_player_idx"]
+    player = state["players"][pidx]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    if not candidates:
+        _advance_turn(state)
+        return
+    # Use basic heuristic flip selection, fall back to random
+    day = _ai_pick_flip(state, pidx, "basic")
+    if day is None:
+        day = random.choice(candidates)
+    _flip_up(state, pidx, day)
+    card = player["cards"][day - 1]
+    ct = card["card_type"]
+    strength = card.get("strength", "normal")
+    _rollout_ability(state, pidx, ct, strength, "basic", current_day=day)
+    _advance_turn(state)
+
+
 def _determinize_state(state, observing_pidx):
     """Return a deep copy of state with opponents' face-down card types randomized."""
     s = copy.deepcopy(state)
@@ -591,7 +648,7 @@ def _mcts_flip_decision(state, pidx, rollouts):
             _advance_turn(sim)
             steps = 0
             while sim["phase"] == "game" and steps < 30:
-                _rollout_take_turn(sim)
+                _smart_rollout_turn(sim)
                 steps += 1
             totals[d] += _calculate_scores(sim).get(my_name, 0)
 
@@ -601,21 +658,37 @@ def _mcts_flip_decision(state, pidx, rollouts):
 # ── AI logic ──────────────────────────────────────────────────────────────────
 
 def _ai_arrange(player_draft_cards):
-    """Assign cards to days with bias toward matching day (type N on day N)."""
+    """Assign cards to days with probabilistic matching-day placement for diversity.
+
+    Strong cards: 80% chance of matching day placement.
+    Normal cards: 50% chance of matching day placement.
+    Remaining slots are filled randomly.
+    """
     cards_info = list(player_draft_cards)
     days = list(range(1, 7))
 
     assignment = {}
     taken_days = set()
 
-    # Greedy: assign matching days first
-    for card in cards_info:
+    # Separate strong and normal cards
+    strong_cards = [c for c in cards_info if c.get("strength") == "strong"]
+    normal_cards = [c for c in cards_info if c.get("strength") != "strong"]
+
+    # Process strong cards first (80% match rate)
+    for card in strong_cards:
         ct = card["card_type"]
-        if ct not in taken_days:  # day ct is open
+        if ct not in taken_days and random.random() < 0.8:
             assignment[ct] = ct
             taken_days.add(ct)
 
-    # Assign remaining randomly
+    # Process normal cards (50% match rate)
+    for card in normal_cards:
+        ct = card["card_type"]
+        if ct not in assignment and ct not in taken_days and random.random() < 0.5:
+            assignment[ct] = ct
+            taken_days.add(ct)
+
+    # Assign remaining cards randomly
     remaining_cards = [c["card_type"] for c in cards_info if c["card_type"] not in assignment]
     remaining_days = [d for d in days if d not in taken_days]
     random.shuffle(remaining_days)
