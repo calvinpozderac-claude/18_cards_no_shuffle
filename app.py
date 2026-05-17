@@ -69,14 +69,14 @@ CARD_PTS = {
     1: (1, 2, -1),   # Coffee Shop  — late arrival best
     2: (1, 2, -1),   # Park         — late arrival best
     3: (3, 1, -2),   # Cinema       — strong first-arrival bonus
-    4: (4, 2, -2),   # Restaurant   — race for 1st is critical
+    4: (-1, 1, 3),   # Restaurant   — arrive LAST for best score; tension with early peek
     5: (5, 3, -4),   # Beach        — being third wheel is devastating
     6: (3, 1,  0),   # Museum       — early arrival rewarded
 }
 
 # Draft value estimates: strong card of this type (tuned after balance sim)
 # Restaurant and Beach are now equally desirable; Museum buffed.
-DRAFT_VALUES = {4: 80, 5: 80, 3: 65, 2: 60, 1: 55, 6: 60}
+DRAFT_VALUES = {4: 70, 5: 80, 3: 65, 2: 60, 1: 55, 6: 60}
 
 # ── core game logic ───────────────────────────────────────────────────────────
 
@@ -257,6 +257,8 @@ def _new_state(player_names):
         "draft_order": draft_order,
         "draft_pick_idx": 0,
         "locks": [],
+        "pocketed_abilities": [None] * n,  # one slot per player; None or {card_type, strength}
+        "peeked_cards": {},                 # {str(pidx): [[opp_pidx, day], ...]}
     }
 
 def _assign_normal_cards(state):
@@ -304,11 +306,17 @@ def _state_for_player(game, my_pidx):
                     p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None})
         else:
             # game/end phase
-            for c in player["cards"]:
+            peeked_by_me = state.get("peeked_cards", {}).get(str(my_pidx), [])
+            for d_idx, c in enumerate(player["cards"]):
                 if i == my_pidx or c["face_up"]:
                     card_copy = dict(c)
                     # Include strength and banked for face-up cards
                     p["cards"].append(card_copy)
+                elif [i, d_idx + 1] in peeked_by_me:
+                    p["cards"].append({
+                        "card_type": c["card_type"], "face_up": False,
+                        "arrival": 0, "strength": None, "banked": False, "peeked": True
+                    })
                 else:
                     p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None, "banked": False})
 
@@ -332,6 +340,7 @@ def _state_for_player(game, my_pidx):
         "move_log": state.get("move_log", []),
         "locks": state.get("locks", []),
     }
+    out["pocketed_ability"] = state.get("pocketed_abilities", [None] * len(state["players"]))[my_pidx]
 
     # Draft phase extras
     if state["phase"] == "draft":
@@ -504,19 +513,18 @@ def _rollout_ability(state, pidx, ct, strength, difficulty="random", current_day
                 if not _is_locked(state, tpi, day) and not _is_locked(state, tpi, tday):
                     _swap_days(state, tpi, day, tday)
 
-    elif ct == 4:  # Switch arrival order (global queues)
-        all_cts = [int(k) for k in state["arrivals"] if len(state["arrivals"][k]) >= 2]
-        if all_cts:
-            c = random.choice(all_cts)
-            arr = state["arrivals"][str(c)]
-            if strength == "strong":
-                random.shuffle(arr)
-                _renumber(state, c)
-            else:
-                if len(arr) >= 2:
-                    i, j = random.sample(range(len(arr)), 2)
-                    arr[i], arr[j] = arr[j], arr[i]
-                    _renumber(state, c)
+    elif ct == 4:  # Peek — record random peek in peeked_cards (no state effect for rollouts)
+        opponents = [pi for pi in range(len(state["players"])) if pi != pidx]
+        peeked = state["peeked_cards"].setdefault(str(pidx), [])
+        count = 2 if strength == "strong" else 1
+        for _ in range(count):
+            targets = [
+                [opi, d + 1] for opi in opponents
+                for d, c in enumerate(state["players"][opi]["cards"])
+                if not c["face_up"] and [opi, d + 1] not in peeked
+            ]
+            if targets:
+                peeked.append(random.choice(targets))
 
     elif ct == 5:  # Bank points (AI auto-decide)
         player_cards = state["players"][pidx]["cards"]
@@ -740,65 +748,6 @@ def _mcts_best_flip_own_down(state, pidx, rollouts, exclude_day=None):
     return max(targets, key=lambda t: totals[t])
 
 
-def _mcts_best_switch_arrival_strong(state, pidx):
-    """ct=4 strong: reorder the best global type queue to maximize MCTS advantage.
-    Returns (ct, new_order_list) or (None, None)."""
-    best_gain, best_ct, best_order = -999, None, None
-
-    for k, arr in state["arrivals"].items():
-        if len(arr) < 2:
-            continue
-        ct = int(k)
-        pts = CARD_PTS[ct]
-
-        if pidx in arr:
-            others = [p for p in arr if p != pidx]
-            new_order = [pidx] + others
-            gain = pts[0] - pts[min(arr.index(pidx), len(pts) - 1)]
-        else:
-            # Put the opponent with most to lose from going last → at the end
-            others_scored = []
-            for p in arr:
-                cur_pts = pts[min(arr.index(p), len(pts) - 1)]
-                last_pts = pts[min(len(arr) - 1, len(pts) - 1)]
-                others_scored.append((cur_pts - last_pts, p))
-            others_scored.sort(reverse=True)
-            new_order = [p for _, p in others_scored[1:]] + [others_scored[0][1]]
-            gain = others_scored[0][0]
-
-        if gain > best_gain:
-            best_gain, best_ct, best_order = gain, ct, new_order
-
-    if best_ct is None:
-        return None, None
-    return best_ct, best_order
-
-
-def _mcts_best_switch_arrival_normal(state, pidx):
-    """ct=4 normal: find the best swap in any global type queue. Returns (ct, i, j) or None."""
-    best_gain, best_result = -1, None
-
-    for k, arr in state["arrivals"].items():
-        if len(arr) < 2:
-            continue
-        ct = int(k)
-        pts = CARD_PTS[ct]
-
-        for i in range(len(arr)):
-            for j in range(i + 1, len(arr)):
-                if arr[i] == pidx:
-                    continue  # MCTS already at better position i, skip
-                elif arr[j] == pidx:
-                    gain = pts[min(i, len(pts)-1)] - pts[min(j, len(pts)-1)]
-                else:
-                    # Punish the better-positioned opponent
-                    gain = pts[min(i, len(pts)-1)] - pts[min(j, len(pts)-1)]
-
-                if gain > best_gain:
-                    best_gain = gain
-                    best_result = (ct, i, j)
-
-    return best_result  # may be None
 
 
 def _mcts_best_swap_other_strong(state, pidx, rollouts):
@@ -1015,27 +964,6 @@ def _ai_swap_other_adj_target(state, pidx, difficulty):
     return tpi, day, tday
 
 
-def _ai_switch_arrival_target(state, pidx, strength, difficulty):
-    """Type 4: pick a global ct queue with 2+ arrivals. Returns ct (int) or None."""
-    all_cts = [int(k) for k in state["arrivals"] if len(state["arrivals"][k]) >= 2]
-    if not all_cts:
-        return None
-    if difficulty == "random":
-        return random.choice(all_cts)
-    # Basic: find queue where we can gain the most points by moving to 1st
-    best_gain, best_ct = -1, None
-    for ct in all_cts:
-        arr = state["arrivals"].get(str(ct), [])
-        if pidx not in arr:
-            continue
-        pts = CARD_PTS[ct]
-        our_pts = pts[min(arr.index(pidx), len(pts) - 1)]
-        gain = pts[0] - our_pts
-        if gain > best_gain:
-            best_gain, best_ct = gain, ct
-    return best_ct if best_ct is not None else random.choice(all_cts)
-
-
 def _ai_flip_down_strong_target(state, pidx, difficulty, exclude_day=None):
     """Type 6 strong: flip own face-up card. Returns day or None.
     exclude_day: the day just flipped (avoid flipping it back down immediately)."""
@@ -1183,41 +1111,25 @@ def _ai_take_turn(game):
                 _swap_days(state, tpi, day_s, tday_s)
                 _log(state, f"↳ {pname} used Swap Others (normal): shifted {state['players'][tpi]['name']}'s Day {day_s} → Day {tday_s}")
 
-    elif ct == 4:  # Switch arrival order (global queues)
-        if is_mcts and strength == "strong":
-            sw_ct, new_order = _mcts_best_switch_arrival_strong(state, pidx)
-            if sw_ct is not None:
-                arr = state["arrivals"].get(str(sw_ct), [])
-                arr[:] = new_order
-                _renumber(state, sw_ct)
-                _log(state, f"↳ {pname} used Switch Arrival (strong): reordered {LOCATION_NAMES[sw_ct]}")
-            else:
-                _log(state, f"↳ {pname} used Switch Arrival (strong): no useful queue found")
-        elif is_mcts and strength == "normal":
-            result4 = _mcts_best_switch_arrival_normal(state, pidx)
-            if result4:
-                sw_ct, i, j = result4
-                arr = state["arrivals"].get(str(sw_ct), [])
-                if len(arr) >= 2:
-                    arr[i], arr[j] = arr[j], arr[i]
-                    _renumber(state, sw_ct)
-                    _log(state, f"↳ {pname} used Switch Arrival (normal): swapped arrivals at {LOCATION_NAMES[sw_ct]}")
-            else:
-                _log(state, f"↳ {pname} used Switch Arrival (normal): no useful swap found")
+    elif ct == 4:  # Peek at opponent face-down cards
+        opponents = [pi for pi in range(len(state["players"])) if pi != pidx]
+        peeked = state["peeked_cards"].setdefault(str(pidx), [])
+        count = 2 if strength == "strong" else 1
+        peeked_names = []
+        for _ in range(count):
+            targets = [
+                [opi, d + 1] for opi in opponents
+                for d, c in enumerate(state["players"][opi]["cards"])
+                if not c["face_up"] and [opi, d + 1] not in peeked
+            ]
+            if targets:
+                target = random.choice(targets)
+                peeked.append(target)
+                peeked_names.append(f"{state['players'][target[0]]['name']}'s Day {target[1]}")
+        if peeked_names:
+            _log(state, f"↳ {pname} used Peek: peeked at {', '.join(peeked_names)}")
         else:
-            sw_ct = _ai_switch_arrival_target(state, pidx, strength, difficulty)
-            if sw_ct is not None:
-                arr = state["arrivals"].get(str(sw_ct), [])
-                if strength == "strong":
-                    random.shuffle(arr)
-                    _renumber(state, sw_ct)
-                    _log(state, f"↳ {pname} used Switch Arrival (strong): reordered {LOCATION_NAMES[sw_ct]}")
-                else:
-                    if len(arr) >= 2:
-                        i, j = random.sample(range(len(arr)), 2)
-                        arr[i], arr[j] = arr[j], arr[i]
-                        _renumber(state, sw_ct)
-                        _log(state, f"↳ {pname} used Switch Arrival (normal): swapped arrivals at {LOCATION_NAMES[sw_ct]}")
+            _log(state, f"↳ {pname} used Peek: no face-down cards to peek at")
 
     elif ct == 5:  # Bank points — AI auto-decide
         bank_pts = 2 if strength == "strong" else 1
@@ -1461,74 +1373,77 @@ def api_flip(game_id, token):
     arr_label = {1: "1st", 2: "2nd", 3: "3rd"}.get(card["arrival"], f"#{card['arrival']}")
     strength_label = "★" if strength == "strong" else ""
     _log(state, f"{player['name']} flipped {strength_label}{LOCATION_NAMES[ct]} on Day {day} — {arr_label} to arrive")
-    pending, msg = None, None
+    # Determine what ability would fire
+    would_be_action, would_be_msg, would_be_ctx = None, None, {}
 
     if ct == 1:  # Lock
         if strength == "strong":
-            pending = "lock_pick_day"
-            msg = f"Lock (strong): Choose a day — ALL cards on that day will be locked."
-            state["action_ctx"] = {"actor": pidx, "strength": "strong"}
+            would_be_action = "lock_pick_day"
+            would_be_msg = "Lock (strong): Choose a day — ALL cards on that day will be locked."
+            would_be_ctx = {"actor": pidx, "strength": "strong"}
         else:
-            pending = "lock_pick_day"
-            msg = f"Lock (normal): Choose a day, then select 2 cards to lock."
-            state["action_ctx"] = {"actor": pidx, "strength": "normal"}
+            would_be_action = "lock_pick_day"
+            would_be_msg = "Lock (normal): Choose a day, then select 2 cards to lock."
+            would_be_ctx = {"actor": pidx, "strength": "normal"}
 
     elif ct == 2:  # Swap own
         if strength == "strong":
-            pending = "swap_own_1"
-            msg = f"Swap Own (strong): Click one of your cards — first of two to swap."
-            state["action_ctx"] = {"actor": pidx, "strength": "strong"}
+            would_be_action = "swap_own_1"
+            would_be_msg = "Swap Own (strong): Click one of your cards — first of two to swap."
+            would_be_ctx = {"actor": pidx, "strength": "strong"}
         else:
-            pending = "adj_swap_own"
-            msg = f"Swap Own (normal): Click one of your cards to shift it to an adjacent day."
-            state["action_ctx"] = {"actor": pidx, "strength": "normal"}
+            would_be_action = "adj_swap_own"
+            would_be_msg = "Swap Own (normal): Click one of your cards to shift it to an adjacent day."
+            would_be_ctx = {"actor": pidx, "strength": "normal"}
 
     elif ct == 3:  # Swap others
         if strength == "strong":
-            pending = "swap_other_1"
-            msg = f"Swap Others (strong): Click an opponent's card — first of two to swap."
-            state["action_ctx"] = {"actor": pidx, "strength": "strong"}
+            would_be_action = "swap_other_1"
+            would_be_msg = "Swap Others (strong): Click an opponent's card — first of two to swap."
+            would_be_ctx = {"actor": pidx, "strength": "strong"}
         else:
-            pending = "adj_swap_other"
-            msg = f"Swap Others (normal): Click an opponent's card to shift it to an adjacent day."
-            state["action_ctx"] = {"actor": pidx, "strength": "normal"}
+            would_be_action = "adj_swap_other"
+            would_be_msg = "Swap Others (normal): Click an opponent's card to shift it to an adjacent day."
+            would_be_ctx = {"actor": pidx, "strength": "normal"}
 
-    elif ct == 4:  # Switch arrival order
-        pending = "switch_arrival_pick"
-        msg = f"Switch Arrival ({'strong: reorder all' if strength == 'strong' else 'normal: swap two'}): Click a card to choose an arrival slot."
-        state["action_ctx"] = {"actor": pidx, "strength": strength}
+    elif ct == 4:  # Peek
+        count = 2 if strength == "strong" else 1
+        would_be_action = "peek_pick_1"
+        would_be_msg = f"Peek ({'strong: pick 2 cards' if strength == 'strong' else 'normal: pick 1 card'}): Click an opponent's face-down card."
+        would_be_ctx = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
 
-    elif ct == 5:  # Bank points — human decides
-        # Set pending bank_decision with context
+    elif ct == 5:  # Bank points — immediate decision, no pocketing
         state["action_ctx"] = {"actor": pidx, "bank_day": day, "strength": strength}
-        pending = "bank_decision"
+        state["pending_action"] = "bank_decision"
         bank_pts = 2 if strength == "strong" else 1
-        msg = f"Beach card flipped! Bank +{bank_pts} pts now, or keep for day-matching bonus?"
+        state["action_message"] = f"Beach card flipped! Bank +{bank_pts} pts now, or keep for day-matching bonus?"
+        return jsonify(_state_for_player(game, pidx))
 
     elif ct == 6:  # Flip down
         if strength == "strong":
-            # Flip own face-up card
-            face_up_own = [c for c in player["cards"] if c["face_up"]]
-            if face_up_own:
-                pending = "flip_own_down"
-                msg = f"Flip Down (strong): Click one of YOUR face-up cards to flip it down."
-                state["action_ctx"] = {"actor": pidx, "strength": "strong"}
+            would_be_action = "flip_own_down"
+            would_be_msg = "Flip Down (strong): Click one of YOUR face-up cards to flip it down."
+            would_be_ctx = {"actor": pidx, "strength": "strong"}
         else:
-            # Flip opponent's face-up card
-            opp_face_up = [
-                c for pi, p in enumerate(state["players"]) if pi != pidx
-                for c in p["cards"] if c["face_up"]
-            ]
-            if opp_face_up:
-                pending = "flip_other_down"
-                msg = f"Flip Down (normal): Click an OPPONENT'S face-up card to flip it down."
-                state["action_ctx"] = {"actor": pidx, "strength": "normal"}
+            would_be_action = "flip_other_down"
+            would_be_msg = "Flip Down (normal): Click an OPPONENT'S face-up card to flip it down."
+            would_be_ctx = {"actor": pidx, "strength": "normal"}
 
-    if pending:
-        state["pending_action"] = pending
-        if not state.get("action_ctx"):
-            state["action_ctx"] = {"actor": pidx}
-        state["action_message"] = msg
+    if would_be_action:
+        pocket_full = state["pocketed_abilities"][pidx] is not None
+        state["pending_action"] = "pocket_choice"
+        state["action_ctx"] = {
+            "actor": pidx,
+            "pocket_ct": ct,
+            "pocket_strength": strength,
+            "would_be_action": would_be_action,
+            "would_be_ctx": would_be_ctx,
+            "would_be_msg": would_be_msg,
+            "pocket_full": pocket_full,
+        }
+        state["action_message"] = (
+            f"{LOCATION_NAMES[ct]} ability ready! Use now, pocket for later, or skip?"
+        )
     else:
         _advance_turn(state)
         _process_ai_turns(game)
@@ -1761,85 +1676,51 @@ def api_action(game_id, token):
             _log(state, f"↳ {state['players'][actor]['name']} used Swap Others (normal): shifted {state['players'][src_pi]['name']}'s Day {src} → Day {tday}")
             done = True
 
-    # ── Switch arrival pick (type 4) ──────────────────────────────────────────
-    elif action == "switch_arrival_pick":
-        card = _card_at(state["players"][tpi], tday)
-        if not card or not card["face_up"]:
-            err = "Must click a face-up card."
-        else:
-            ct = card["card_type"]
-            k = str(ct)  # global queue key
-            arr = state["arrivals"].get(k, [])
-            if len(arr) < 2:
-                err = "Need at least 2 arrivals for that type globally."
-            else:
-                ctx["sw_ct"] = ct
-                strength = ctx.get("strength", "normal")
-                if strength == "strong":
-                    # Show reorder UI
-                    state["pending_action"] = "switch_arrival_reorder"
-                    state["action_ctx"]["arrivals"] = list(arr)
-                    state["action_message"] = f"Reorder arrivals at {LOCATION_NAMES[ct]}. Use set_reorder."
-                    needs_pos = True
-                    arrival_info = {
-                        "player_name": LOCATION_NAMES[ct],
-                        "location": LOCATION_NAMES[ct],
-                        "current": card["arrival"],
-                        "num": len(arr),
-                        "arrival_list": [state["players"][pi]["name"] for pi in arr],
-                        "arrival_pidxs": list(arr),
-                        "reorder": True,
-                    }
-                else:
-                    # Normal: swap 2
-                    state["pending_action"] = "switch_arrival_swap_1"
-                    state["action_ctx"]["arrival_list"] = list(arr)
-                    state["action_message"] = (
-                        f"Select first arrival to swap at {LOCATION_NAMES[ct]}. "
-                        f"Players: {', '.join(state['players'][pi]['name'] for pi in arr)}"
-                    )
-                    needs_pos = True
-                    arrival_info = {
-                        "player_name": LOCATION_NAMES[ct],
-                        "location": LOCATION_NAMES[ct],
-                        "current": card["arrival"],
-                        "num": len(arr),
-                        "arrival_list": [state["players"][pi]["name"] for pi in arr],
-                        "arrival_pidxs": list(arr),
-                        "reorder": False,
-                    }
-
-    elif action == "switch_arrival_reorder":
-        # Handled by set_reorder endpoint
-        err = "Use /set_reorder to complete this action."
-
-    elif action == "switch_arrival_swap_1":
-        # Player selected which arrival position to swap (by player_idx)
-        arr = state["arrivals"].get(str(ctx["sw_ct"]), [])
-        if tpi not in arr:
-            err = "That player is not in that global queue."
-        else:
-            ctx["swap_first_pi"] = tpi
-            state["pending_action"] = "switch_arrival_swap_2"
-            state["action_message"] = (
-                f"Selected {state['players'][tpi]['name']}. Click a second player at that location to swap."
-            )
-
-    elif action == "switch_arrival_swap_2":
-        arr = state["arrivals"].get(str(ctx["sw_ct"]), [])
-        first_pi = ctx.get("swap_first_pi")
-        if tpi not in arr:
-            err = "That player is not in that global queue."
-        elif tpi == first_pi:
-            err = "Must select a different player."
-        else:
-            i1 = arr.index(first_pi)
-            i2 = arr.index(tpi)
-            arr[i1], arr[i2] = arr[i2], arr[i1]
-            _renumber(state, ctx["sw_ct"])
-            _log(state, f"↳ {state['players'][actor]['name']} used Switch Arrival (normal): swapped {state['players'][first_pi]['name']} ↔ {state['players'][tpi]['name']} at {LOCATION_NAMES[ctx['sw_ct']]}")
-            success_msg = f"Swapped arrival positions!"
+    # ── Pocket choice ─────────────────────────────────────────────────────────
+    elif action == "pocket_choice":
+        choice = data.get("choice")
+        if choice == "use_now":
+            state["pending_action"] = ctx["would_be_action"]
+            state["action_ctx"] = dict(ctx["would_be_ctx"])
+            state["action_message"] = ctx.get("would_be_msg", "")
+            resp = _state_for_player(game, pidx)
+            resp["action_result"] = {"error": None, "done": False}
+            return jsonify(resp)
+        elif choice == "pocket" and not ctx.get("pocket_full"):
+            state["pocketed_abilities"][pidx] = {
+                "card_type": ctx["pocket_ct"], "strength": ctx["pocket_strength"]
+            }
+            _log(state, f"{state['players'][pidx]['name']} pocketed {LOCATION_NAMES[ctx['pocket_ct']]} ability")
             done = True
+        else:  # "skip" or "pocket" when full
+            _log(state, f"{state['players'][pidx]['name']} skipped {LOCATION_NAMES[ctx['pocket_ct']]} ability")
+            done = True
+
+    # ── Peek (type 4) ─────────────────────────────────────────────────────────
+    elif action in ("peek_pick_1", "peek_pick_2"):
+        if tpi == actor:
+            err = "Must target an opponent's card."
+        else:
+            opp_card = _card_at(state["players"][tpi], tday)
+            if not opp_card or opp_card.get("face_up"):
+                err = "Must target a face-down card."
+            else:
+                peeked = state["peeked_cards"].setdefault(str(actor), [])
+                pair = [tpi, tday]
+                if pair in peeked:
+                    err = "You already know that card."
+                else:
+                    peeked.append(pair)
+                    _log(state, f"↳ {state['players'][actor]['name']} peeked at {state['players'][tpi]['name']}'s Day {tday}")
+                    peek_remaining = ctx.get("peek_remaining", 1) - 1
+                    ctx["peek_remaining"] = peek_remaining
+                    if peek_remaining > 0:
+                        state["pending_action"] = "peek_pick_2"
+                        state["action_message"] = "Peeked! Now pick a second face-down card."
+                        success_msg = f"Peeked at Day {tday}! Pick one more."
+                    else:
+                        success_msg = f"Peeked at {state['players'][tpi]['name']}'s Day {tday}!"
+                        done = True
 
     # ── Flip down (type 6) ────────────────────────────────────────────────────
     elif action == "flip_other_down":
@@ -1871,39 +1752,6 @@ def api_action(game_id, token):
                 success_msg = f"Flipped your {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
                 _log(state, f"↳ {state['players'][actor]['name']} used Flip Down (strong): flipped own {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down")
                 done = True
-
-    elif action in ("change_arr_other", "change_arr_own"):
-        is_other = action == "change_arr_other"
-        if is_other and tpi == actor:
-            err = "Must target an opponent's card."
-        elif not is_other and tpi != actor:
-            err = "Must target your own card."
-        else:
-            card = _card_at(state["players"][tpi], tday)
-            if not card or not card["face_up"]:
-                err = "Must target a face-up card."
-            else:
-                ct_here = card["card_type"]
-                arr = state["arrivals"].get(str(ct_here), [])
-                if len(arr) < 2:
-                    err = "Only one player there — no arrival order to change."
-                else:
-                    ctx["ability"] = "Beach" if action == "change_arr_other" else "Museum"
-                    ctx["target_pi"] = tpi
-                    ctx["target_day"] = tday
-                    state["pending_action"] = "set_arrival"
-                    state["action_message"] = (
-                        f"Select new arrival position for "
-                        f"{state['players'][tpi]['name']}'s "
-                        f"{LOCATION_NAMES[ct_here]}."
-                    )
-                    needs_pos = True
-                    arrival_info = {
-                        "player_name": state["players"][tpi]["name"],
-                        "location": LOCATION_NAMES[card["card_type"]],
-                        "day": tday, "current": card["arrival"],
-                        "num": len(arr),
-                    }
 
     if done:
         state["pending_action"] = None
