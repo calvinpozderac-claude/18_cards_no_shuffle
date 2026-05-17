@@ -638,33 +638,51 @@ def _process_ai_ability_queue(game):
             state["ability_resolution_queue"].pop(0)
         _advance_ability_queue(game)
         i += 1
-
-    # If back to choosing and there are AI players, process their choices
-    if state["phase"] == "choosing":
-        _process_choosing_ai(game)
+    # Note: do NOT call _process_choosing_ai here — let the caller decide.
+    # This prevents mutual recursion. Callers must call _process_choosing_ai after if needed.
 
 
 def _process_choosing_ai(game):
-    """Auto-submit choices for all AI players in the choosing phase."""
+    """Auto-submit choices for all AI players in the choosing phase, then resolve rounds.
+    Uses an iterative loop to handle multiple rounds without deep recursion."""
     state = game["state"]
-    if state["phase"] != "choosing":
-        return
     ai_set = set(state.get("ai_players", []))
     n = len(state["players"])
+    limit = 50  # safety limit for number of rounds
+    rounds_processed = 0
 
-    for pidx in range(n):
-        if pidx in ai_set and str(pidx) not in state["round_choices"]:
-            ct, day = _ai_choose_play(state, pidx)
-            if ct is not None and day is not None:
-                state["round_choices"][str(pidx)] = {"card_type": ct, "day": day}
-                player = state["players"][pidx]
-                _log(state, f"{player['name']} chose a card for this round")
+    while rounds_processed < limit:
+        if state["phase"] != "choosing":
+            break
 
-    # Check if all have chosen
-    if len(state["round_choices"]) == n:
+        # Submit choices for all AI players that haven't chosen yet
+        for pidx in range(n):
+            if pidx in ai_set and str(pidx) not in state["round_choices"]:
+                ct, day = _ai_choose_play(state, pidx)
+                if ct is not None and day is not None:
+                    state["round_choices"][str(pidx)] = {"card_type": ct, "day": day}
+                    player = state["players"][pidx]
+                    _log(state, f"{player['name']} chose a card for this round")
+
+        # Check if all have chosen (or if we're still waiting for a human)
+        if len(state["round_choices"]) < n:
+            # Not all chosen yet — a human still needs to pick
+            break
+
+        # All chosen: resolve the round
         _resolve_round(game)
+        rounds_processed += 1
+
+        # If in game phase, process AI abilities
         if state["phase"] == "game":
             _process_ai_ability_queue(game)
+            # If AI abilities advanced back to choosing, loop continues
+            # If still in game (human has ability), stop
+            if state["phase"] != "choosing":
+                break
+        elif state["phase"] not in ("choosing",):
+            # Game ended or moved to date_resolution/end
+            break
 
 
 def _state_for_player(game, my_pidx):
@@ -950,7 +968,7 @@ def _rollout_ability(state, pidx, ct, strength, difficulty="random", current_day
             targets = [
                 [opi, d + 1] for opi in opponents
                 for d, c in enumerate(state["players"][opi]["cards"])
-                if not c["face_up"] and [opi, d + 1] not in peeked
+                if c is not None and not c["face_up"] and [opi, d + 1] not in peeked
             ]
             if targets:
                 peeked.append(random.choice(targets))
@@ -1000,7 +1018,7 @@ def _rollout_take_turn(state):
         return
     pidx = state["current_player_idx"]
     player = state["players"][pidx]
-    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if c is not None and not c["face_up"]]
     if not candidates:
         _advance_turn(state)
         return
@@ -1019,7 +1037,7 @@ def _smart_rollout_turn(state):
         return
     pidx = state["current_player_idx"]
     player = state["players"][pidx]
-    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if c is not None and not c["face_up"]]
     if not candidates:
         _advance_turn(state)
         return
@@ -1081,7 +1099,7 @@ def _mcts_flip_decision(state, pidx, rollouts):
     Uses _partial_smart_rollout so opponents are simulated as random (accurate
     when facing random players; conservative when facing smart players)."""
     player = state["players"][pidx]
-    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if c is not None and not c["face_up"]]
     if not candidates:
         return None
     if len(candidates) == 1:
@@ -1256,7 +1274,7 @@ def _ai_arrange(player_draft_cards, avoid_day_match=False, always_day_match=Fals
 def _ai_pick_flip(state, pidx, difficulty):
     """Choose a face-down card to flip. Returns day number."""
     player = state["players"][pidx]
-    candidates = [d + 1 for d, c in enumerate(player["cards"]) if not c["face_up"]]
+    candidates = [d + 1 for d, c in enumerate(player["cards"]) if c is not None and not c["face_up"]]
     if not candidates:
         return None
     if difficulty == "random":
@@ -2000,6 +2018,8 @@ def api_bank_decision(game_id, token):
         state["ability_resolution_queue"].pop(0)
         _advance_ability_queue(game)
         _process_ai_ability_queue(game)
+        if state["phase"] == "choosing":
+            _process_choosing_ai(game)
     else:
         _advance_turn(state)
         _process_ai_turns(game)
@@ -2351,6 +2371,8 @@ def api_action(game_id, token):
             state["ability_resolution_queue"].pop(0)
             _advance_ability_queue(game)
             _process_ai_ability_queue(game)
+            if state["phase"] == "choosing":
+                _process_choosing_ai(game)
         else:
             _advance_turn(state)
             _process_ai_turns(game)
@@ -2405,6 +2427,8 @@ def api_cancel(game_id, token):
         state["ability_resolution_queue"].pop(0)
         _advance_ability_queue(game)
         _process_ai_ability_queue(game)
+        if state["phase"] == "choosing":
+            _process_choosing_ai(game)
     else:
         _advance_turn(state)
         _process_ai_turns(game)
