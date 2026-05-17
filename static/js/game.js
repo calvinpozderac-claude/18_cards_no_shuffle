@@ -78,7 +78,7 @@ let lastRenderKey = null;
 let msgTimer = null;
 
 function renderKey(s) {
-  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}|${s.draft_pick_idx||0}`;
+  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}|${s.draft_pick_idx||0}|${s.current_date_ct||''}|${(s.date_results||[]).length}|${s.my_date_move}`;
 }
 
 /* ── room state (persisted across refreshes) ─────────────────────────────── */
@@ -416,6 +416,9 @@ function render(state) {
   } else if (state.phase === "game") {
     app.innerHTML = gameHTML(state);
     bindGame(state, prevSnap);
+  } else if (state.phase === "date_resolution") {
+    app.innerHTML = dateResolutionHTML(state);
+    bindDateResolution(state);
   } else if (state.phase === "end") {
     stopPolling();
     app.innerHTML = endHTML(state);
@@ -1128,6 +1131,128 @@ function closeModal() {
   document.getElementById("modal-overlay").classList.add("hidden");
 }
 
+/* ══ DATE RESOLUTION SCREEN ══════════════════════════════════════════════════ */
+function dateResolutionHTML(state) {
+  const ct = state.current_date_ct;
+  const arrivals = state.arrivals || {};
+  const arr = ct ? (arrivals[String(ct)] || []) : [];
+  const participants = arr.slice(0, 3);
+  const iAmIn = state.i_am_in_date;
+  const myMove = state.my_date_move;
+  const submitted = state.date_moves_submitted || 0;
+  const total = state.date_moves_total || 0;
+  const results = state.date_results || [];
+  const queue = state.date_queue || [];
+  const scores = state.scores || {};
+  const CARD_PTS_JS = {1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]};
+  const pts = ct ? (CARD_PTS_JS[ct] || []) : [];
+
+  let currentSection = "";
+  if (ct) {
+    const stakeRows = participants.map((pi, i) => {
+      const name = state.players[pi].name;
+      const isMe = pi === MY_IDX;
+      const p = pts[i] !== undefined ? pts[i] : 0;
+      return `<div class="date-stake-row ${isMe ? 'is-me' : ''}">
+        <span class="date-arrival-pos">${['1st','2nd','3rd'][i]}</span>
+        <span class="date-player-name">${name}${isMe ? ' (you)' : ''}</span>
+        <span class="date-stake-pts" style="color:${p >= 0 ? '#80FF80' : '#FF8080'}">${p >= 0 ? '+' : ''}${p} pts at stake</span>
+      </div>`;
+    }).join("");
+
+    let decisionArea = "";
+    if (!iAmIn) {
+      decisionArea = `<div class="date-not-in">You're not at this location — watching…</div>`;
+    } else if (myMove === null || myMove === undefined) {
+      decisionArea = `
+<div class="date-decision">
+  <p class="date-decision-hint">Choose secretly — all decisions reveal at once!</p>
+  <div class="date-decision-btns">
+    <button class="btn btn-primary date-btn-move" id="btn-make-move">🎯 Make a Move</button>
+    <button class="btn btn-outline date-btn-safe" id="btn-play-safe">🛡️ Play it Safe</button>
+  </div>
+</div>`;
+    } else {
+      decisionArea = `<div class="date-waiting">
+        <span style="color:#FFD700;font-size:1rem">${myMove ? '🎯 You made a move' : '🛡️ You played it safe'}</span>
+        <div class="spinner" style="margin:8px auto"></div>
+        <p style="font-size:.8rem;color:#8870aa">${submitted}/${total} decided — waiting for reveal…</p>
+      </div>`;
+    }
+
+    currentSection = `
+<div class="date-current">
+  <div class="date-location-header" style="background:${LOC_COLORS[ct]}18;border-color:${LOC_COLORS[ct]}">
+    <span class="date-loc-num" style="color:${LOC_COLORS[ct]};font-size:1.4rem;font-weight:900">${ct}</span>
+    <span class="date-loc-name">${LOCATION_NAMES[ct]}</span>
+    <span class="date-loc-queue" style="font-size:.75rem;color:#8870aa">Date ${queue.indexOf(ct)+1} of ${queue.length}</span>
+  </div>
+  <div class="date-stakes">${stakeRows}</div>
+  ${decisionArea}
+</div>`;
+  }
+
+  const pastResults = results.length > 0 ? `
+<div class="date-history">
+  <h3 style="color:#CC99FF;margin:16px 0 8px">Resolved Dates</h3>
+  ${[...results].reverse().map((r, ri) => {
+    const isLatest = ri === 0;
+    return `<div class="date-result-card ${isLatest ? 'date-result-latest' : ''}">
+      <div class="date-result-header">
+        <span style="color:${LOC_COLORS[r.ct]};font-weight:700">${r.location}</span>
+        <span class="date-result-outcome">${r.outcome}</span>
+      </div>
+      ${r.pidxs.map((pi, i) => {
+        const moved = r.moves[String(pi)];
+        const rpts = r.result_pts[String(pi)];
+        const npts = r.normal_pts[String(pi)];
+        const changed = rpts !== npts;
+        return `<div class="date-result-row">
+          <span>${moved ? '🎯' : '🛡️'} ${r.players[i]}</span>
+          <span style="color:${rpts>=0?'#80FF80':'#FF8080'};font-weight:${changed?700:400}">
+            ${rpts>=0?'+':''}${rpts}${changed ? ` (was ${npts>=0?'+':''}${npts})` : ''}
+          </span>
+        </div>`;
+      }).join("")}
+    </div>`;
+  }).join("")}
+</div>` : "";
+
+  return `
+<div class="screen date-resolution-screen">
+  <div class="topbar">
+    <span class="topbar-title">Don't Be the Third Wheel!</span>
+    <span class="topbar-turn" style="color:#FFD700">📅 Having the Dates…</span>
+    <div class="topbar-btns">
+      <button class="topbar-theme-btn" id="btn-theme" onclick="toggleTheme()"></button>
+    </div>
+  </div>
+  <div style="max-width:580px;margin:0 auto;padding:16px">
+    ${currentSection}
+    <div class="score-strip">
+      ${state.players.map(p =>
+        `<span class="score-item"><strong>${p.name}</strong>: ${
+          scores[p.name] !== undefined ? (scores[p.name] >= 0 ? '+' : '') + scores[p.name] : 0
+        } pts</span>`
+      ).join("")}
+    </div>
+    ${pastResults}
+  </div>
+</div>`;
+}
+
+function bindDateResolution(state) {
+  applyTheme(currentTheme());
+  document.getElementById("btn-make-move")?.addEventListener("click", async () => {
+    G = await apiPost(gameUrl("make_move"), { make_move: true });
+    render(G);
+  });
+  document.getElementById("btn-play-safe")?.addEventListener("click", async () => {
+    G = await apiPost(gameUrl("make_move"), { make_move: false });
+    render(G);
+  });
+}
+
 /* ══ END SCREEN ═════════════════════════════════════════════════════════════ */
 function endHTML(state) {
   const scores   = state.scores || {};
@@ -1183,25 +1308,34 @@ function endHTML(state) {
 
   <div class="breakdown">
     <h3>Date Results</h3>
-    ${arrivals.map(r => {
-      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]})[r.card_type] || [1,2,-1];
-      let note, cls;
-      if (r.n === 1) {
-        note = "solo — no arrival points";
-        cls  = "neutral";
-      } else if (r.n === 2) {
-        note = `1st: ${pts[0]>=0?"+":""}${pts[0]} · 2nd: ${pts[1]>=0?"+":""}${pts[1]}`;
-        cls  = "good";
-      } else {
-        note = `1st:+${pts[0]} 2nd:+${pts[1]} 3rd:${pts[2]}`;
-        cls  = "bad";
-      }
-      return `<div class="breakdown-row">
-        <span class="bloc">${r.location}</span>
-        <span class="bplrs">${r.players.join(" → ")}</span>
-        <span class="bscore ${cls}">${note}</span>
-      </div>`;
-    }).join("")}
+    ${(state.date_results && state.date_results.length > 0)
+      ? state.date_results.map(r => `
+        <div style="border-bottom:1px solid #2a1a4a;padding:8px 0">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span class="bloc" style="color:${LOC_COLORS[r.ct]}">${r.location}</span>
+            <span style="font-size:.72rem;color:#CCAAFF">${r.outcome}</span>
+          </div>
+          ${r.pidxs.map((pi, i) => {
+            const moved = r.moves[String(pi)];
+            const rpts = r.result_pts[String(pi)];
+            const npts = r.normal_pts[String(pi)];
+            return `<div class="breakdown-row" style="border:none;padding:2px 0">
+              <span class="bplrs">${moved ? '🎯' : '🛡️'} ${r.players[i]}</span>
+              <span class="bscore ${rpts >= 0 ? 'good' : 'bad'}">${rpts>=0?'+':''}${rpts}${rpts!==npts?` (was ${npts>=0?'+':''}${npts})`:''}</span>
+            </div>`;
+          }).join("")}
+        </div>`).join("")
+      : arrivals.map(r => {
+          const pts = ({1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]})[r.card_type] || [1,2,-1];
+          const note = r.n === 1 ? "solo — no pts" : r.n === 2
+            ? `1st:${pts[0]>=0?'+':''}${pts[0]} · 2nd:${pts[1]>=0?'+':''}${pts[1]}`
+            : `1st:+${pts[0]} 2nd:+${pts[1]} 3rd:${pts[2]}`;
+          return `<div class="breakdown-row">
+            <span class="bloc">${r.location}</span>
+            <span class="bplrs">${r.players.join(" → ")}</span>
+            <span class="bscore ${r.n===1?'neutral':r.n===2?'good':'bad'}">${note}</span>
+          </div>`;
+        }).join("")}
   </div>
 
   ${dayMatchRows.length > 0 ? `

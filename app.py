@@ -159,8 +159,135 @@ def _change_arrival(state, pidx, day, new_pos):
 def _check_game_over(state):
     if all(c["face_up"] for p in state["players"] for c in p["cards"]):
         state["game_over"] = True
-        state["phase"] = "end"
+        _start_date_resolution(state)
     return state["game_over"]
+
+
+def _start_date_resolution(state):
+    queue = [int(k) for k, arr in sorted(state["arrivals"].items(), key=lambda x: int(x[0]))
+             if len(arr) >= 2]
+    state["date_queue"] = queue
+    state["date_results"] = []
+    state["date_resolution_pts"] = {str(i): 0 for i in range(len(state["players"]))}
+    if queue:
+        state["phase"] = "date_resolution"
+        state["current_date_ct"] = queue[0]
+        state["date_moves"] = {}
+    else:
+        state["phase"] = "end"
+
+
+def _resolve_current_date(state):
+    ct = state["current_date_ct"]
+    arr = state["arrivals"].get(str(ct), [])
+    moves = state["date_moves"]   # {str(pidx): bool}
+    pts = CARD_PTS[ct]
+    n = min(len(arr), 3)
+    participants = arr[:n]
+
+    def np(i):  # normal pts for position i
+        return pts[i] if i < len(pts) else 0
+
+    normal = {participants[i]: np(i) for i in range(n)}
+    moved = {pi for pi in participants if moves.get(str(pi), False)}
+    result = {}
+    outcome = ""
+
+    if n == 2:
+        p1, p2 = participants
+        if p1 in moved and p2 in moved:
+            result = {p1: normal[p1] * 2, p2: normal[p2] * 2}
+            outcome = "Both made a move — points doubled!"
+        elif p1 in moved:
+            result = {p1: 0, p2: normal[p2]}
+            outcome = f"{state['players'][p1]['name']} moved alone — forfeited their points"
+        elif p2 in moved:
+            result = {p1: normal[p1], p2: 0}
+            outcome = f"{state['players'][p2]['name']} moved alone — forfeited their points"
+        else:
+            result = {p1: normal[p1], p2: normal[p2]}
+            outcome = "No moves — normal points"
+
+    elif n >= 3:
+        p1, p2, p3 = participants[0], participants[1], participants[2]
+        m1, m2, m3 = p1 in moved, p2 in moved, p3 in moved
+        if m1 and m2 and m3:
+            result = {p1: 0, p2: 0, p3: 0}
+            outcome = "All three made a move — awkward! No points for anyone"
+        elif m3 and m1 and not m2:
+            result = {p1: normal[p1], p2: normal[p3], p3: normal[p2]}
+            outcome = f"{state['players'][p3]['name']} stole from {state['players'][p2]['name']}!"
+        elif m3 and not m1 and m2:
+            result = {p1: normal[p3], p2: normal[p2], p3: normal[p1]}
+            outcome = f"{state['players'][p3]['name']} stole from {state['players'][p1]['name']}!"
+        elif m3 and not m1 and not m2:
+            result = {p1: normal[p1], p2: normal[p2], p3: normal[p3] * 2}
+            outcome = f"{state['players'][p3]['name']} moved alone — penalty doubled!"
+        elif m1 and m2 and not m3:
+            result = {p1: normal[p1] * 2, p2: normal[p2] * 2, p3: normal[p3]}
+            outcome = "Both positives made a move — points doubled!"
+        elif m1 and not m2 and not m3:
+            result = {p1: 0, p2: normal[p2], p3: normal[p3]}
+            outcome = f"{state['players'][p1]['name']} moved alone — forfeited their points"
+        elif not m1 and m2 and not m3:
+            result = {p1: normal[p1], p2: 0, p3: normal[p3]}
+            outcome = f"{state['players'][p2]['name']} moved alone — forfeited their points"
+        else:
+            result = {p: normal[p] for p in participants}
+            outcome = "No moves — normal points"
+
+    # Accumulate
+    for pi, v in result.items():
+        state["date_resolution_pts"][str(pi)] = state["date_resolution_pts"].get(str(pi), 0) + v
+
+    # Record for display
+    state["date_results"].append({
+        "ct": ct,
+        "location": LOCATION_NAMES[ct],
+        "players": [state["players"][pi]["name"] for pi in participants],
+        "pidxs": list(participants),
+        "moves": {str(pi): moves.get(str(pi), False) for pi in participants},
+        "normal_pts": {str(pi): normal[pi] for pi in participants},
+        "result_pts": {str(pi): result.get(pi, 0) for pi in participants},
+        "outcome": outcome,
+    })
+    _log(state, f"Date resolved — {LOCATION_NAMES[ct]}: {outcome}")
+
+    # Advance
+    queue = state["date_queue"]
+    idx = queue.index(ct)
+    if idx + 1 < len(queue):
+        state["current_date_ct"] = queue[idx + 1]
+        state["date_moves"] = {}
+    else:
+        state["phase"] = "end"
+        state["current_date_ct"] = None
+
+
+def _process_date_ai_moves(game):
+    state = game["state"]
+    if state["phase"] != "date_resolution":
+        return
+    ct = state.get("current_date_ct")
+    if ct is None:
+        return
+    arr = state["arrivals"].get(str(ct), [])
+    participants = arr[:min(len(arr), 3)]
+    ai_set = set(state.get("ai_players", []))
+    pts = CARD_PTS[ct]
+
+    for i, pidx in enumerate(participants):
+        if pidx in ai_set and str(pidx) not in state["date_moves"]:
+            my_pts = pts[i] if i < len(pts) else 0
+            # Heuristic: if negative arrival pts, usually make a move; else 50/50
+            make_move = random.random() < (0.65 if my_pts < 0 else 0.45)
+            state["date_moves"][str(pidx)] = make_move
+
+    all_submitted = all(str(pi) in state["date_moves"] for pi in participants)
+    if all_submitted:
+        _resolve_current_date(state)
+        if state["phase"] == "date_resolution":
+            _process_date_ai_moves(game)
 
 def _advance_turn(state):
     n = len(state["players"])
@@ -182,16 +309,23 @@ def _advance_turn(state):
 def _calculate_scores(state):
     scores = {p["name"]: 0 for p in state["players"]}
 
-    # Global arrival scoring: arrivals keyed by str(ct)
-    for k, arr in state["arrivals"].items():
-        n = len(arr)
-        if n < 2:
-            continue
-        ct = int(k)
-        pts = CARD_PTS[ct]
-        for i, pidx in enumerate(arr[:3]):
-            if i < len(pts):
-                scores[state["players"][pidx]["name"]] += pts[i]
+    use_resolution = (state.get("phase") in ("date_resolution", "end")
+                      and "date_resolution_pts" in state)
+
+    if use_resolution:
+        for i, player in enumerate(state["players"]):
+            scores[player["name"]] += state["date_resolution_pts"].get(str(i), 0)
+    else:
+        # Global arrival scoring: arrivals keyed by str(ct)
+        for k, arr in state["arrivals"].items():
+            n = len(arr)
+            if n < 2:
+                continue
+            ct = int(k)
+            pts = CARD_PTS[ct]
+            for i, pidx in enumerate(arr[:3]):
+                if i < len(pts):
+                    scores[state["players"][pidx]["name"]] += pts[i]
 
     # Day-matching bonus: type N on day N
     for ct in range(1, 7):
@@ -348,9 +482,29 @@ def _state_for_player(game, my_pidx):
         out["draft_order"] = state.get("draft_order", [])
         out["draft_pick_idx"] = state.get("draft_pick_idx", 0)
 
-    if state["phase"] in ("game", "end"):
+    if state["phase"] in ("game", "end", "date_resolution"):
         out["scores"] = _calculate_scores(state)
         out["arrivals_display"] = _arrivals_display(state)
+
+    if state["phase"] in ("date_resolution", "end"):
+        out["date_queue"] = state.get("date_queue", [])
+        out["current_date_ct"] = state.get("current_date_ct")
+        out["date_results"] = state.get("date_results", [])
+        out["date_resolution_pts"] = state.get("date_resolution_pts", {})
+        ct = state.get("current_date_ct")
+        if ct is not None:
+            arr = state["arrivals"].get(str(ct), [])
+            participants = arr[:min(len(arr), 3)]
+            out["my_date_move"] = state.get("date_moves", {}).get(str(my_pidx))
+            out["i_am_in_date"] = my_pidx in participants
+            submitted = sum(1 for pi in participants if str(pi) in state.get("date_moves", {}))
+            out["date_moves_submitted"] = submitted
+            out["date_moves_total"] = len(participants)
+        else:
+            out["my_date_move"] = None
+            out["i_am_in_date"] = False
+            out["date_moves_submitted"] = 0
+            out["date_moves_total"] = 0
 
     return out
 
@@ -1181,6 +1335,8 @@ def _process_ai_turns(game):
     ):
         _ai_take_turn(game)
         i += 1
+    if state["phase"] == "date_resolution":
+        _process_date_ai_moves(game)
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
@@ -1449,6 +1605,42 @@ def api_flip(game_id, token):
         _process_ai_turns(game)
 
     return jsonify(_state_for_player(game, pidx))
+
+@app.route("/api/game/<game_id>/<token>/make_move", methods=["POST"])
+def api_make_move(game_id, token):
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
+    if state["phase"] != "date_resolution":
+        return jsonify({"error": "Not in date resolution phase"}), 400
+
+    ct = state.get("current_date_ct")
+    if ct is None:
+        return jsonify({"error": "No active date"}), 400
+
+    arr = state["arrivals"].get(str(ct), [])
+    participants = arr[:min(len(arr), 3)]
+
+    if pidx not in participants:
+        return jsonify({"error": "You are not in this date"}), 400
+    if str(pidx) in state.get("date_moves", {}):
+        return jsonify({"error": "Already decided for this date"}), 400
+
+    make_move = bool(request.json.get("make_move", False))
+    state.setdefault("date_moves", {})[str(pidx)] = make_move
+
+    move_word = "made a move" if make_move else "played it safe"
+    _log(state, f"{state['players'][pidx]['name']} {move_word} at {LOCATION_NAMES[ct]} (hidden until reveal)")
+
+    all_submitted = all(str(pi) in state["date_moves"] for pi in participants)
+    if all_submitted:
+        _resolve_current_date(state)
+        if state["phase"] == "date_resolution":
+            _process_date_ai_moves(game)
+
+    return jsonify(_state_for_player(game, pidx))
+
 
 @app.route("/api/game/<game_id>/<token>/bank_decision", methods=["POST"])
 def api_bank_decision(game_id, token):

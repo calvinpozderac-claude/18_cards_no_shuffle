@@ -806,3 +806,29 @@ body {
 /* day headers and board background */
 [data-theme="light"] .board-day-header       { background: var(--surface-3); border-color: var(--border); }
 [data-theme="light"] .card.face-up.ct-4      { box-shadow: 0 2px 6px rgba(0,0,0,.1); } /* override ct-4 glow */
+
+/* ── date resolution screen ──────────────────────────────────────────────── */
+.date-resolution-screen { min-height: 100vh; }
+.date-current { background: #1a0d35; border: 1px solid #3a2060; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+.date-location-header { display: flex; align-items: center; gap: 12px; border: 1px solid; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+.date-loc-num { font-size: 1.4rem; font-weight: 900; }
+.date-loc-name { font-size: 1.1rem; font-weight: 700; flex: 1; }
+.date-loc-queue { font-size: .75rem; color: #8870aa; }
+.date-stake-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid #2a1a4a; }
+.date-stake-row.is-me { background: #1e0d40; border-radius: 6px; padding: 6px 8px; }
+.date-arrival-pos { font-size: .7rem; color: #8870aa; width: 28px; }
+.date-player-name { flex: 1; font-weight: 600; }
+.date-stake-pts { font-size: .8rem; font-weight: 700; }
+.date-decision { text-align: center; margin-top: 16px; }
+.date-decision-hint { font-size: .82rem; color: #CCAAFF; margin-bottom: 10px; }
+.date-decision-btns { display: flex; gap: 12px; justify-content: center; }
+.date-btn-move { font-size: 1rem; padding: 10px 24px; }
+.date-btn-safe { font-size: 1rem; padding: 10px 24px; }
+.date-waiting { text-align: center; padding: 16px; }
+.date-not-in { text-align: center; color: #8870aa; padding: 12px; font-style: italic; }
+.date-history { margin-top: 8px; }
+.date-result-card { background: #1a0d35; border: 1px solid #2a1a4a; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.date-result-latest { border-color: #7a50c0; box-shadow: 0 0 8px #7a50c030; }
+.date-result-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-weight: 700; }
+.date-result-outcome { font-size: .75rem; color: #CCAAFF; font-weight: 400; max-width: 55%; text-align: right; }
+.date-result-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: .85rem; }
