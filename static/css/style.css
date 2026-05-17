@@ -691,10 +691,18 @@ body {
   border-radius: var(--radius-lg); padding: 28px 32px; max-width: 400px;
   text-align: center; box-shadow: 0 0 40px var(--gold-glow), var(--shadow);
 }
-.bank-modal-title { color: var(--gold-hi); font-size: 1.1rem; font-weight: 800; margin-bottom: 10px; }
+.bank-modal-title { color: var(--gold-hi); font-size: 1.1rem; font-weight: 800; margin-bottom: 8px; }
 .bank-modal-desc  { color: var(--text-2); font-size: .88rem; line-height: 1.6; margin-bottom: 20px; }
 .bank-modal-btns  { display: flex; gap: 12px; justify-content: center; }
 .bank-modal-btns .btn { padding: 10px 22px; }
+.bank-card-action { font-size: .83rem; color: var(--text-2); line-height: 1.5; margin-bottom: 10px; padding: 8px 10px; background: var(--surface-3); border-radius: 6px; }
+.bank-divider { height: 1px; background: var(--border); margin: 10px 0; }
+.bank-stored-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 6px; background: rgba(255,215,0,.07); border: 1px solid rgba(255,215,0,.2); }
+.bank-stored-label { font-size: .65rem; color: var(--gold-hi); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.bank-stored-card  { font-size: .88rem; font-weight: 700; }
+.bank-stored-ability { font-size: .75rem; color: var(--text-muted); line-height: 1.4; }
+.bank-stored-empty { color: var(--text-muted); font-size: .78rem; font-style: italic; background: none; border-color: var(--border); }
+.banked-pill { font-size: .78rem; color: var(--gold-hi); background: rgba(255,215,0,.1); border: 1px solid rgba(255,215,0,.3); border-radius: 12px; padding: 3px 10px; white-space: nowrap; }
 
 /* ── arrange screen hints ─────────────────────────────────────────────────── */
 .lmatch { font-size: .6rem; color: var(--text-muted); }

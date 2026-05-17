@@ -126,6 +126,26 @@ def _flip_down(state, pidx, day):
     card["banked"] = False  # unbank when flipped down
     return True
 
+def _return_to_hand(state, pidx, day):
+    """Remove a placed card from the board and return it to the player's hand."""
+    player = state["players"][pidx]
+    card = _card_at(player, day)
+    if not card or not card.get("face_up"):
+        return False
+    if _is_locked(state, pidx, day):
+        return False
+    ct = card["card_type"]
+    strength = card.get("strength", "normal")
+    k = str(ct)
+    arr = state["arrivals"].get(k, [])
+    if pidx in arr:
+        arr.remove(pidx)
+        state["arrivals"][k] = arr
+        _renumber(state, ct)
+    player["cards"][day - 1] = None
+    player.setdefault("hand_cards", []).append({"card_type": ct, "strength": strength})
+    return True
+
 def _swap_days(state, pidx, day1, day2):
     if _is_locked(state, pidx, day1) or _is_locked(state, pidx, day2):
         return False
@@ -488,9 +508,9 @@ def _setup_ability_for_player(state, pidx, ct, strength):
         return True  # pending set, caller should not set pocket_choice
     elif ct == 6:
         if strength == "strong":
-            would_be_action, would_be_msg = "flip_own_down", "Flip Down (strong): Click one of YOUR face-up cards."
+            would_be_action, would_be_msg = "flip_own_down", "Return to Hand (strong): Click one of YOUR face-up cards to return it to your hand."
         else:
-            would_be_action, would_be_msg = "flip_other_down", "Flip Down (normal): Click an OPPONENT'S face-up card."
+            would_be_action, would_be_msg = "flip_other_down", "Return to Hand (normal): Click an OPPONENT'S face-up card to return it to their hand."
         would_be_ctx = {"actor": pidx, "strength": strength}
 
     if would_be_action:
@@ -1189,7 +1209,7 @@ def _mcts_best_flip_own_down(state, pidx, rollouts, exclude_day=None):
     for t in targets:
         for _ in range(n_per):
             sim = _determinize_state(state, pidx)
-            _flip_down(sim, pidx, t)
+            _return_to_hand(sim, pidx, t)
             _advance_turn(sim)
             totals[t] += _mcts_rollout_score(sim, pidx, my_name)
     return max(targets, key=lambda t: totals[t])
@@ -1589,7 +1609,7 @@ def _ai_take_turn(game):
             card["banked"] = False
             _log(state, f"↳ {pname} kept Beach card for day-match bonus")
 
-    elif ct == 6:  # Flip down
+    elif ct == 6:  # Return to hand
         if strength == "strong":
             tday = (
                 _mcts_best_flip_own_down(state, pidx, max(rollouts // 4, 20), exclude_day=day)
@@ -1598,16 +1618,16 @@ def _ai_take_turn(game):
             if tday is not None:
                 tcard = _card_at(player, tday)
                 tct = tcard["card_type"] if tcard else ct
-                _flip_down(state, pidx, tday)
-                _log(state, f"↳ {pname} used Flip Down (strong): flipped own {LOCATION_NAMES[tct]} (Day {tday}) face down")
+                _return_to_hand(state, pidx, tday)
+                _log(state, f"↳ {pname} used Return to Hand (strong): returned own {LOCATION_NAMES[tct]} (Day {tday}) to hand")
         else:
             result = _ai_flip_down_normal_target(state, pidx, difficulty)
             if result[0] is not None:
                 tpi, tday = result
                 tcard = _card_at(state["players"][tpi], tday)
                 tct = tcard["card_type"] if tcard else ct
-                _flip_down(state, tpi, tday)
-                _log(state, f"↳ {pname} used Flip Down (normal): flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[tct]} (Day {tday}) face down")
+                _return_to_hand(state, tpi, tday)
+                _log(state, f"↳ {pname} used Return to Hand (normal): returned {state['players'][tpi]['name']}'s {LOCATION_NAMES[tct]} (Day {tday}) to hand")
 
     _advance_turn(state)
 
@@ -1917,14 +1937,14 @@ def api_flip(game_id, token):
         state["action_message"] = f"Beach card flipped! Bank +{bank_pts} pts now, or keep for day-matching bonus?"
         return jsonify(_state_for_player(game, pidx))
 
-    elif ct == 6:  # Flip down
+    elif ct == 6:  # Return to hand
         if strength == "strong":
             would_be_action = "flip_own_down"
-            would_be_msg = "Flip Down (strong): Click one of YOUR face-up cards to flip it down."
+            would_be_msg = "Return to Hand (strong): Click one of YOUR face-up cards to return it to your hand."
             would_be_ctx = {"actor": pidx, "strength": "strong"}
         else:
             would_be_action = "flip_other_down"
-            would_be_msg = "Flip Down (normal): Click an OPPONENT'S face-up card to flip it down."
+            would_be_msg = "Return to Hand (normal): Click an OPPONENT'S face-up card to return it to their hand."
             would_be_ctx = {"actor": pidx, "strength": "normal"}
 
     if would_be_action:
@@ -2075,10 +2095,10 @@ def api_use_pocket(game_id, token):
     elif ct == 6:
         if strength == "strong":
             pending = "flip_own_down"
-            msg = "Pocketed Flip Down (strong): Click one of YOUR face-up cards to flip it down."
+            msg = "Banked Return to Hand (strong): Click one of YOUR face-up cards to return it to your hand."
         else:
             pending = "flip_other_down"
-            msg = "Pocketed Flip Down (normal): Click an OPPONENT'S face-up card to flip it down."
+            msg = "Banked Return to Hand (normal): Click an OPPONENT'S face-up card to return it to their hand."
         state["action_ctx"] = {"actor": pidx, "strength": strength}
 
     _log(state, f"{state['players'][pidx]['name']} used pocketed {LOCATION_NAMES[ct]} ability")
@@ -2295,13 +2315,63 @@ def api_action(game_id, token):
             resp = _state_for_player(game, pidx)
             resp["action_result"] = {"error": None, "done": False}
             return jsonify(resp)
-        elif choice == "pocket" and not ctx.get("pocket_full"):
+        elif choice == "use_banked":
+            # Use the banked ability, bank this card's ability in its place
+            banked = state["pocketed_abilities"][pidx]
+            if not banked:
+                err = "No banked ability to use."
+            else:
+                # Bank the current card's ability
+                state["pocketed_abilities"][pidx] = {
+                    "card_type": ctx["pocket_ct"], "strength": ctx["pocket_strength"]
+                }
+                _log(state, f"{state['players'][pidx]['name']} used banked {LOCATION_NAMES[banked['card_type']]} ability (banked {LOCATION_NAMES[ctx['pocket_ct']]})")
+                # Execute the banked ability
+                bct, bstrength = banked["card_type"], banked["strength"]
+                pending_b, msg_b, ctx_b = None, None, {}
+                if bct == 1:
+                    pending_b = "lock_pick_day"
+                    msg_b = f"Banked Lock ({'strong' if bstrength == 'strong' else 'normal'}): Choose a day to lock."
+                    ctx_b = {"actor": pidx, "strength": bstrength}
+                elif bct == 2:
+                    if bstrength == "strong":
+                        pending_b, msg_b = "swap_own_1", "Banked Swap Own (strong): Click one of your cards — first of two to swap."
+                    else:
+                        pending_b, msg_b = "adj_swap_own", "Banked Swap Own (normal): Click one of your cards to shift to an adjacent day."
+                    ctx_b = {"actor": pidx, "strength": bstrength}
+                elif bct == 3:
+                    if bstrength == "strong":
+                        pending_b, msg_b = "swap_other_1", "Banked Swap Others (strong): Click an opponent's card — first of two to swap."
+                    else:
+                        pending_b, msg_b = "adj_swap_other", "Banked Swap Others (normal): Click an opponent's card to shift to an adjacent day."
+                    ctx_b = {"actor": pidx, "strength": bstrength}
+                elif bct == 4:
+                    count = 2 if bstrength == "strong" else 1
+                    pending_b = "peek_pick_1"
+                    msg_b = f"Banked Peek: Click an opponent's face-down card."
+                    ctx_b = {"actor": pidx, "strength": bstrength, "peek_count": count, "peek_remaining": count}
+                elif bct == 6:
+                    if bstrength == "strong":
+                        pending_b, msg_b = "flip_own_down", "Banked Return to Hand (strong): Click one of YOUR face-up cards."
+                    else:
+                        pending_b, msg_b = "flip_other_down", "Banked Return to Hand (normal): Click an OPPONENT'S face-up card."
+                    ctx_b = {"actor": pidx, "strength": bstrength}
+                if pending_b:
+                    state["pending_action"] = pending_b
+                    state["action_ctx"] = ctx_b
+                    state["action_message"] = msg_b
+                    resp = _state_for_player(game, pidx)
+                    resp["action_result"] = {"error": None, "done": False}
+                    return jsonify(resp)
+                else:
+                    done = True
+        elif choice == "bank":
             state["pocketed_abilities"][pidx] = {
                 "card_type": ctx["pocket_ct"], "strength": ctx["pocket_strength"]
             }
-            _log(state, f"{state['players'][pidx]['name']} pocketed {LOCATION_NAMES[ctx['pocket_ct']]} ability")
+            _log(state, f"{state['players'][pidx]['name']} banked {LOCATION_NAMES[ctx['pocket_ct']]} ability")
             done = True
-        else:  # "skip" or "pocket" when full
+        else:  # "skip"
             _log(state, f"{state['players'][pidx]['name']} skipped {LOCATION_NAMES[ctx['pocket_ct']]} ability")
             done = True
 
@@ -2331,7 +2401,7 @@ def api_action(game_id, token):
                         success_msg = f"Peeked at {state['players'][tpi]['name']}'s Day {tday}!"
                         done = True
 
-    # ── Flip down (type 6) ────────────────────────────────────────────────────
+    # ── Return to hand (type 6) ───────────────────────────────────────────────
     elif action == "flip_other_down":
         if tpi == actor:
             err = "Must target an opponent's card."
@@ -2342,9 +2412,10 @@ def api_action(game_id, token):
             if not card or not card["face_up"]:
                 err = "Must target a face-up card."
             else:
-                _flip_down(state, tpi, tday)
-                success_msg = f"Flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
-                _log(state, f"↳ {state['players'][actor]['name']} used Flip Down (normal): flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down")
+                ct_name = LOCATION_NAMES[card["card_type"]]
+                _return_to_hand(state, tpi, tday)
+                success_msg = f"Returned {state['players'][tpi]['name']}'s {ct_name} to their hand!"
+                _log(state, f"↳ {state['players'][actor]['name']} used Return to Hand (normal): returned {state['players'][tpi]['name']}'s {ct_name} (Day {tday}) to hand")
                 done = True
 
     elif action == "flip_own_down":
@@ -2357,9 +2428,10 @@ def api_action(game_id, token):
             if not card or not card["face_up"]:
                 err = "Must target a face-up card."
             else:
-                _flip_down(state, tpi, tday)
-                success_msg = f"Flipped your {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
-                _log(state, f"↳ {state['players'][actor]['name']} used Flip Down (strong): flipped own {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down")
+                ct_name = LOCATION_NAMES[card["card_type"]]
+                _return_to_hand(state, tpi, tday)
+                success_msg = f"Returned your {ct_name} (Day {tday}) to your hand!"
+                _log(state, f"↳ {state['players'][actor]['name']} used Return to Hand (strong): returned own {ct_name} (Day {tday}) to hand")
                 done = True
 
     if done:

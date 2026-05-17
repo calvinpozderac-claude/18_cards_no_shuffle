@@ -59,8 +59,8 @@ Arrival scoring applies only when 2 or more players arrive at the same location 
 - **Scoring:** 1st +5 · 2nd +3 · 3rd −4
 
 ### 6 — Museum
-- **Strong:** Flip one of your own face-up cards back down
-- **Normal:** Flip an opponent's face-up card down
+- **Strong:** Return one of your own cards to your hand (replay it later)
+- **Normal:** Return an opponent's card to their hand
 - **Scoring:** 1st +3 · 2nd +1 · 3rd ±0
 
 ---

@@ -819,10 +819,10 @@ function gameHTML(state) {
     ${isMyTurn && state.pending_action && state.pending_action !== "bank_decision" && state.pending_action !== "pocket_choice"
       ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>`
       : ""}
-    ${isMyTurn && !state.pending_action && state.pocketed_ability
-      ? `<button class="btn btn-pocket" id="btn-use-pocket">
-           🎴 Use Pocketed: ${LOCATION_NAMES[state.pocketed_ability.card_type]} ${state.pocketed_ability.strength === 'strong' ? '★' : ''}
-         </button>`
+    ${!state.pending_action && state.pocketed_ability
+      ? `<span class="banked-pill">
+           💰 Banked: ${LOCATION_NAMES[state.pocketed_ability.card_type]}${state.pocketed_ability.strength === 'strong' ? ' ★' : ''}
+         </span>`
       : ""}
   </div>
 
@@ -889,19 +889,38 @@ function buildPocketChoiceModal(state) {
   const ctx = state.action_ctx || {};
   const ct = ctx.pocket_ct;
   const s = ctx.pocket_strength;
-  const pocketFull = ctx.pocket_full;
+  const banked = state.pocketed_ability;
   const abilityName = CARD_ABILITIES[ct] ? (s === "strong" ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal) : "";
+
+  const bankedSection = banked
+    ? `<div class="bank-stored-row">
+        <span class="bank-stored-label">Banked:</span>
+        <span class="bank-stored-card" style="color:${LOC_COLORS[banked.card_type]}">
+          ${LOCATION_NAMES[banked.card_type]}${banked.strength === 'strong' ? ' ★' : ''}
+        </span>
+        <span class="bank-stored-ability">${CARD_ABILITIES[banked.card_type] ? (banked.strength === 'strong' ? CARD_ABILITIES[banked.card_type].strong : CARD_ABILITIES[banked.card_type].normal) : ''}</span>
+      </div>`
+    : `<div class="bank-stored-row bank-stored-empty">No banked action</div>`;
+
+  const buttons = banked ? `
+    <button class="btn btn-primary" id="btn-pocket-use-now">▶ Use card action</button>
+    <button class="btn btn-pocket" id="btn-pocket-use-banked">🔄 Use banked (bank this one)</button>
+    <button class="btn btn-cancel" id="btn-pocket-skip">✕ Skip</button>
+  ` : `
+    <button class="btn btn-primary" id="btn-pocket-use-now">▶ Use action</button>
+    <button class="btn btn-pocket" id="btn-pocket-save">💰 Bank for later</button>
+    <button class="btn btn-cancel" id="btn-pocket-skip">✕ Skip</button>
+  `;
+
   return `
 <div class="bank-modal-overlay" id="pocket-modal">
   <div class="bank-modal">
-    <h3 class="bank-modal-title">${LOCATION_NAMES[ct]} Ability${s === 'strong' ? ' ★' : ''}</h3>
-    <p class="bank-modal-desc" style="font-size:.85rem">${abilityName}</p>
-    <div class="bank-modal-btns" style="flex-direction:column;gap:8px">
-      <button class="btn btn-primary" id="btn-pocket-use-now">Use Now</button>
-      <button class="btn btn-pocket" id="btn-pocket-save" ${pocketFull ? 'disabled title="Pocket is full — use or skip existing first"' : ''}>
-        🎴 Pocket for Later ${pocketFull ? "(full)" : ""}
-      </button>
-      <button class="btn btn-cancel" id="btn-pocket-skip">Skip</button>
+    <h3 class="bank-modal-title">${LOCATION_NAMES[ct]}${s === 'strong' ? ' ★' : ''} played</h3>
+    <div class="bank-card-action">${abilityName}</div>
+    <div class="bank-divider"></div>
+    ${bankedSection}
+    <div class="bank-modal-btns" style="flex-direction:column;gap:8px;margin-top:12px">
+      ${buttons}
     </div>
   </div>
 </div>`;
@@ -1127,7 +1146,7 @@ function bindGame(state, prevSnap = null) {
     });
   }
 
-  // Pocket choice modal
+  // Banking modal (pocket_choice)
   if (state.pending_action === "pocket_choice" && state.current_player_idx === MY_IDX) {
     document.getElementById("btn-pocket-use-now")?.addEventListener("click", async () => {
       const resp = await apiPost(gameUrl("action"), { choice: "use_now" });
@@ -1135,11 +1154,18 @@ function bindGame(state, prevSnap = null) {
       if (G.action_message) showMsg(G.action_message);
     });
     document.getElementById("btn-pocket-save")?.addEventListener("click", async () => {
-      const resp = await apiPost(gameUrl("action"), { choice: "pocket" });
+      const resp = await apiPost(gameUrl("action"), { choice: "bank" });
       const result = resp.action_result || {};
       if (result.error) { showMsg(result.error, "error"); return; }
       G = resp; render(G);
-      showMsg("Ability pocketed for later!", "success");
+      showMsg("Action banked for later!", "success");
+    });
+    document.getElementById("btn-pocket-use-banked")?.addEventListener("click", async () => {
+      const resp = await apiPost(gameUrl("action"), { choice: "use_banked" });
+      const result = resp.action_result || {};
+      if (result.error) { showMsg(result.error, "error"); return; }
+      G = resp; render(G);
+      if (G.action_message) showMsg(G.action_message);
     });
     document.getElementById("btn-pocket-skip")?.addEventListener("click", async () => {
       const resp = await apiPost(gameUrl("action"), { choice: "skip" });
