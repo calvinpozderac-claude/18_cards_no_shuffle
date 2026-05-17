@@ -839,22 +839,20 @@ function cardHTML(state, pi, day, card) {
     }
 
     if (action === "switch_arrival_pick") {
-      const k = `${day},${card.card_type}`;
+      const k = `${card.card_type}`;
       valid = card.face_up && (arrivals[k] || []).length >= 2;
     }
     if (action === "switch_arrival_swap_1") {
-      const sw_day = ctx.sw_day;
       const sw_ct = ctx.sw_ct;
-      const k = `${sw_day},${sw_ct}`;
-      valid = day === sw_day && pi !== -1 && (arrivals[k] || []).includes(pi);
+      const k = `${sw_ct}`;
+      valid = card.face_up && card.card_type === sw_ct && pi !== -1 && (arrivals[k] || []).includes(pi);
     }
     if (action === "switch_arrival_swap_2") {
-      const sw_day = ctx.sw_day;
       const sw_ct = ctx.sw_ct;
-      const k = `${sw_day},${sw_ct}`;
+      const k = `${sw_ct}`;
       const first = ctx.swap_first_pi;
-      if (pi === first && day === sw_day) stateCls = "selected-first";
-      else valid = day === sw_day && (arrivals[k] || []).includes(pi) && pi !== first;
+      if (pi === first && card.card_type === sw_ct && card.face_up) stateCls = "selected-first";
+      else valid = card.face_up && card.card_type === sw_ct && (arrivals[k] || []).includes(pi) && pi !== first;
     }
 
     if (action === "set_arrival" || action === "switch_arrival_reorder") valid = false;
@@ -1160,7 +1158,7 @@ function showScoresModal(state) {
     ${arrivals.map(r => {
       const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+pts, 2nd+pts" : "3rd penalty";
       return `<div style="font-size:.76rem;color:#CCCCFF;padding:2px 0">
-        Day ${r.day} – ${r.location}: ${r.players.join(" → ")} [${note}]
+        ${r.location}: ${r.players.join(" → ")} [${note}]
       </div>`;
     }).join("")}`;
 
@@ -1230,7 +1228,7 @@ function endHTML(state) {
   <div class="breakdown">
     <h3>Date Results</h3>
     ${arrivals.map(r => {
-      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[4,2,-2],5:[3,3,-2],6:[1,1,0]})[r.card_type] || [1,2,-1];
+      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[3,2,-1],5:[3,3,-2],6:[2,1,0]})[r.card_type] || [1,2,-1];
       let note, cls;
       if (r.n === 1) {
         note = "solo — no arrival points";
@@ -1243,7 +1241,6 @@ function endHTML(state) {
         cls  = "bad";
       }
       return `<div class="breakdown-row">
-        <span class="bday">Day ${r.day}</span>
         <span class="bloc">${r.location}</span>
         <span class="bplrs">${r.players.join(" → ")}</span>
         <span class="bscore ${cls}">${note}</span>
