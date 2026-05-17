@@ -30,7 +30,8 @@ function snapshotCards(state) {
   const snap = {};
   (state.players || []).forEach((p, pi) => {
     (p.cards || []).forEach((c, di) => {
-      if (c) snap[`${pi}-${di + 1}`] = { face_up: c.face_up, card_type: c.card_type };
+      if (!c) return;  // null guard for empty slots
+      snap[`${pi}-${di + 1}`] = { face_up: c.face_up, card_type: c.card_type };
     });
   });
   return snap;
@@ -830,6 +831,8 @@ function gameHTML(state) {
 
   ${buildPocketChoiceModal(state)}
 
+  ${buildPeekPicker(state)}
+
   ${buildLockDayPicker(state)}
 
   <div class="board-container">
@@ -926,6 +929,24 @@ function buildPocketChoiceModal(state) {
 </div>`;
 }
 
+function buildPeekPicker(state) {
+  if (!state.pending_action || !state.pending_action.startsWith("peek_pick")) return "";
+  if (state.current_player_idx !== MY_IDX) return "";
+  const peekedAlready = state.peeked_players || [];
+  const opponents = state.players
+    .map((p, pi) => ({name: p.name, pi}))
+    .filter(p => p.pi !== MY_IDX);
+  return `
+<div class="peek-picker" id="peek-picker">
+  <span class="peek-picker-label">Peek: select an opponent to reveal their hand cards</span>
+  ${opponents.map(p =>
+    `<button class="btn btn-primary peek-player-btn" data-pi="${p.pi}" ${peekedAlready.includes(p.pi) ? 'disabled' : ''}>
+      👁 ${p.name}${peekedAlready.includes(p.pi) ? ' (peeked)' : ''}
+    </button>`
+  ).join("")}
+</div>`;
+}
+
 function buildLockDayPicker(state) {
   if (!state.pending_action || state.current_player_idx !== MY_IDX) return "";
   if (state.pending_action !== "lock_pick_day") return "";
@@ -968,6 +989,19 @@ function boardRowHTML(state, pi, player) {
 }
 
 function cardHTML(state, pi, day, card) {
+  if (card === null || card === undefined) {
+    const isMe = pi === MY_IDX;
+    if (isMe && state.phase === "choosing" && !state.i_have_chosen) {
+      return `<button class="card empty-slot target-slot" data-pi="${pi}" data-day="${day}">
+        <span class="card-num" style="opacity:.2">${day}</span>
+        <span class="mystery-label">empty</span>
+      </button>`;
+    }
+    return `<div class="card empty-slot" style="background:rgba(255,255,255,.03);border:1px dashed #2a1a4a" data-pi="${pi}" data-day="${day}">
+      <span class="card-num" style="opacity:.12">${day}</span>
+    </div>`;
+  }
+
   const isMe = pi === MY_IDX;
   const isMyTurn = state.current_player_idx === MY_IDX;
   const action = state.pending_action;
@@ -1035,7 +1069,7 @@ function cardHTML(state, pi, day, card) {
     }
 
     if (action === "peek_pick_1" || action === "peek_pick_2") {
-      valid = !isMe && !card.face_up;
+      valid = false;  // peek now uses buildPeekPicker, not card clicks
     }
 
     if (action === "set_arrival") valid = false;
@@ -1172,6 +1206,18 @@ function bindGame(state, prevSnap = null) {
       G = resp; render(G);
     });
   }
+
+  // Peek player buttons
+  document.querySelectorAll(".peek-player-btn").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const tpi = parseInt(btn.dataset.pi);
+      const resp = await apiPost(gameUrl("action"), { player_idx: tpi, day: -1 });
+      const result = resp.action_result || {};
+      if (result.error) { showMsg(result.error, "error"); return; }
+      G = resp; render(G);
+      if (result.message) showMsg(result.message, "success");
+    });
+  });
 
   // Use pocketed ability button
   document.getElementById("btn-use-pocket")?.addEventListener("click", async () => {

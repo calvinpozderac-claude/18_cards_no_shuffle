@@ -418,6 +418,7 @@ def _new_state(player_names):
         "locks": [],
         "pocketed_abilities": [None] * n,  # one slot per player; None or {card_type, strength}
         "peeked_cards": {},                 # {str(pidx): [[opp_pidx, day], ...]}
+        "peeked_players": {},               # {str(pidx): [opp_pidx, ...]} (hand-mode peek)
     }
 
 def _assign_normal_cards(state):
@@ -614,7 +615,13 @@ def _ai_choose_play(state, pidx):
     if not empty_days:
         return None, None
 
-    # Score each (card, day) pair — prefer arrival value + day-match bonus
+    ai_diffs = state.get("ai_difficulties", {})
+    difficulty = ai_diffs.get(str(pidx)) or state.get("ai_difficulty", "random") or "random"
+
+    if difficulty == "random":
+        return random.choice(hand)["card_type"], random.choice(empty_days)
+
+    # Greedy for basic/mcts: score each (card, day) pair — prefer arrival value + day-match bonus
     best_score, best_ct, best_day = -999, None, None
 
     for card in hand:
@@ -650,7 +657,9 @@ def _process_ai_ability_queue(game):
         if ct:
             # Find the day this card was placed
             day = _find_card_day(state, pidx, ct)
-            _rollout_ability(state, pidx, ct, strength, "basic", current_day=day)
+            ai_diffs = state.get("ai_difficulties", {})
+            diff = ai_diffs.get(str(pidx)) or state.get("ai_difficulty", "random") or "random"
+            _rollout_ability(state, pidx, ct, strength, diff, current_day=day)
             player = state["players"][pidx]
             _log(state, f"↳ {player['name']} ability auto-resolved ({LOCATION_NAMES.get(ct, ct)})")
         # Advance queue
@@ -721,9 +730,11 @@ def _state_for_player(game, my_pidx):
             if i == my_pidx:
                 p["draft_cards"] = player.get("draft_cards", [])
 
-        # hand_cards: expose own hand fully, opponents only get count
-        p["hand_cards"] = player.get("hand_cards", []) if i == my_pidx else []
+        # hand_cards: expose own hand fully; also expose peeked opponents' hands
+        peeked_opps = state.get("peeked_players", {}).get(str(my_pidx), [])
+        p["hand_cards"] = player.get("hand_cards", []) if (i == my_pidx or i in peeked_opps) else []
         p["hand_cards_count"] = len(player.get("hand_cards", []))
+        p["peeked_hand"] = (i in peeked_opps)
 
         if state["phase"] == "arrangement":
             # Show own cards with strength, hide opponents
@@ -781,6 +792,7 @@ def _state_for_player(game, my_pidx):
         "locks": state.get("locks", []),
     }
     out["pocketed_ability"] = state.get("pocketed_abilities", [None] * len(state["players"]))[my_pidx]
+    out["peeked_players"] = state.get("peeked_players", {}).get(str(my_pidx), [])
 
     # Draft phase extras
     if state["phase"] == "draft":
@@ -2378,8 +2390,26 @@ def api_action(game_id, token):
     # ── Peek (type 4) ─────────────────────────────────────────────────────────
     elif action in ("peek_pick_1", "peek_pick_2"):
         if tpi == actor:
-            err = "Must target an opponent's card."
+            err = "Must target an opponent."
+        elif tday == -1:
+            # Play-from-hand mode: peek at a player's full hand
+            peeked_players = state.setdefault("peeked_players", {}).setdefault(str(actor), [])
+            if tpi in peeked_players:
+                err = "Already peeked that player's hand."
+            else:
+                peeked_players.append(tpi)
+                _log(state, f"↳ {state['players'][actor]['name']} peeked at {state['players'][tpi]['name']}'s hand")
+                peek_remaining = ctx.get("peek_remaining", 1) - 1
+                ctx["peek_remaining"] = peek_remaining
+                if peek_remaining > 0:
+                    state["pending_action"] = "peek_pick_2"
+                    state["action_message"] = "Peeked! Now pick another opponent's hand."
+                    success_msg = f"Peeked at {state['players'][tpi]['name']}'s hand!"
+                else:
+                    success_msg = f"Peeked at {state['players'][tpi]['name']}'s hand!"
+                    done = True
         else:
+            # Original face-down board card peek
             opp_card = _card_at(state["players"][tpi], tday)
             if not opp_card or opp_card.get("face_up"):
                 err = "Must target a face-down card."
