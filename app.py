@@ -157,7 +157,7 @@ def _change_arrival(state, pidx, day, new_pos):
     return True
 
 def _check_game_over(state):
-    if all(c["face_up"] for p in state["players"] for c in p["cards"]):
+    if all(c is not None and c["face_up"] for p in state["players"] for c in p["cards"]):
         state["game_over"] = True
         _start_date_resolution(state)
     return state["game_over"]
@@ -290,6 +290,11 @@ def _process_date_ai_moves(game):
             _process_date_ai_moves(game)
 
 def _advance_turn(state):
+    # In hand mode (ability_resolution_queue is active), do nothing here.
+    # _advance_ability_queue handles progression.
+    if state.get("ability_resolution_queue") is not None and len(state.get("ability_resolution_queue", [])) > 0:
+        return
+
     n = len(state["players"])
     state["turn_count"] += 1
     state["current_player_idx"] = (state["current_player_idx"] + 1) % n
@@ -297,7 +302,7 @@ def _advance_turn(state):
         return
     skips = 0
     while (
-        all(c["face_up"] for c in state["players"][state["current_player_idx"]]["cards"])
+        all(c is not None and c["face_up"] for c in state["players"][state["current_player_idx"]]["cards"])
         and skips < n
     ):
         state["turn_count"] += 1
@@ -411,8 +416,256 @@ def _assign_normal_cards(state):
                 state["players"][pidx].setdefault("draft_cards", []).append(
                     {"card_type": ct, "strength": "normal"}
                 )
-    state["phase"] = "arrangement"
+    # Set up hand_cards and empty board slots for each player
+    for player in state["players"]:
+        player["hand_cards"] = list(player.get("draft_cards", []))
+        player["cards"] = [None] * 6  # all slots empty
+        player["arranged"] = True     # skip arrangement phase
+    state["phase"] = "choosing"
     state["current_player_idx"] = 0
+    state["round_choices"] = {}       # {str(pidx): {"card_type": N, "day": D}}
+    state["ability_resolution_queue"] = []
+    state["ability_resolution_cards"] = {}
+
+def _find_card_day(state, pidx, card_type):
+    """Find which day slot a player's card is on."""
+    for d, c in enumerate(state["players"][pidx]["cards"]):
+        if c and c.get("card_type") == card_type:
+            return d + 1
+    return None
+
+
+def _play_from_hand(state, pidx, card_type, day):
+    """Remove card_type from player's hand, place face-up in day slot, register arrival."""
+    player = state["players"][pidx]
+    card_info = next((c for c in player["hand_cards"] if c["card_type"] == card_type), None)
+    if card_info is None:
+        return False
+    player["hand_cards"] = [c for c in player["hand_cards"] if c["card_type"] != card_type]
+    strength = card_info.get("strength", "normal")
+    slot = day - 1
+    player["cards"][slot] = {
+        "card_type": card_type, "face_up": True, "arrival": 0,
+        "strength": strength, "banked": False,
+    }
+    k = _key(day, card_type)
+    state["arrivals"].setdefault(k, []).append(pidx)
+    player["cards"][slot]["arrival"] = len(state["arrivals"][k])
+    return True
+
+
+def _setup_ability_for_player(state, pidx, ct, strength):
+    """Set up pocket_choice pending action for a card just placed from hand."""
+    would_be_action, would_be_msg, would_be_ctx = None, None, {}
+
+    if ct == 1:
+        would_be_action = "lock_pick_day"
+        would_be_msg = f"Lock ({'strong' if strength == 'strong' else 'normal'}): Choose a day to lock."
+        would_be_ctx = {"actor": pidx, "strength": strength}
+    elif ct == 2:
+        if strength == "strong":
+            would_be_action, would_be_msg = "swap_own_1", "Swap Own (strong): Click one of your cards — first of two to swap."
+        else:
+            would_be_action, would_be_msg = "adj_swap_own", "Swap Own (normal): Click one of your cards to shift to an adjacent day."
+        would_be_ctx = {"actor": pidx, "strength": strength}
+    elif ct == 3:
+        if strength == "strong":
+            would_be_action, would_be_msg = "swap_other_1", "Swap Others (strong): Click an opponent's card — first of two to swap."
+        else:
+            would_be_action, would_be_msg = "adj_swap_other", "Swap Others (normal): Click an opponent's card to shift to an adjacent day."
+        would_be_ctx = {"actor": pidx, "strength": strength}
+    elif ct == 4:
+        count = 2 if strength == "strong" else 1
+        would_be_action = "peek_pick_1"
+        would_be_msg = f"Peek: Click an opponent's face-down card."
+        would_be_ctx = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
+    elif ct == 5:
+        # Bank: set up bank_decision directly (no pocket_choice for bank)
+        state["pending_action"] = "bank_decision"
+        state["action_ctx"] = {"actor": pidx, "bank_day": _find_card_day(state, pidx, ct), "strength": strength}
+        state["action_message"] = f"Beach played! Bank +{2 if strength == 'strong' else 1} pts now?"
+        state["current_player_idx"] = pidx
+        return True  # pending set, caller should not set pocket_choice
+    elif ct == 6:
+        if strength == "strong":
+            would_be_action, would_be_msg = "flip_own_down", "Flip Down (strong): Click one of YOUR face-up cards."
+        else:
+            would_be_action, would_be_msg = "flip_other_down", "Flip Down (normal): Click an OPPONENT'S face-up card."
+        would_be_ctx = {"actor": pidx, "strength": strength}
+
+    if would_be_action:
+        pocket_full = state["pocketed_abilities"][pidx] is not None
+        state["pending_action"] = "pocket_choice"
+        state["action_ctx"] = {
+            "actor": pidx,
+            "pocket_ct": ct,
+            "pocket_strength": strength,
+            "would_be_action": would_be_action,
+            "would_be_ctx": would_be_ctx,
+            "would_be_msg": would_be_msg,
+            "pocket_full": pocket_full,
+        }
+        state["action_message"] = f"{LOCATION_NAMES[ct]} played! Use ability now, pocket it, or skip?"
+        state["current_player_idx"] = pidx
+        return True
+    return False
+
+
+def _advance_ability_queue(game):
+    """Process the next player in the ability resolution queue, or return to choosing."""
+    state = game["state"]
+    queue = state.get("ability_resolution_queue", [])
+
+    while queue:
+        pidx = queue[0]
+        card_info = state.get("ability_resolution_cards", {}).get(str(pidx))
+        if card_info:
+            ct = card_info["ct"]
+            strength = card_info["strength"]
+            had_pending = _setup_ability_for_player(state, pidx, ct, strength)
+            if had_pending:
+                return  # stop here, wait for player input
+        # No ability for this player — pop and continue
+        queue.pop(0)
+
+    # Queue exhausted
+    state["ability_resolution_queue"] = []
+    state["ability_resolution_cards"] = {}
+    state["pending_action"] = None
+    state["action_ctx"] = {}
+    state["action_message"] = None
+
+    # Check if all hands empty
+    if all(len(p.get("hand_cards", [])) == 0 for p in state["players"]):
+        state["game_over"] = True
+        _start_date_resolution(state)
+    else:
+        state["phase"] = "choosing"
+        state["round_choices"] = {}
+        state["current_player_idx"] = 0
+
+
+def _resolve_round(game):
+    """Place all chosen cards face-up (in player order), then set up ability resolution queue."""
+    state = game["state"]
+    choices = state["round_choices"]
+    n = len(state["players"])
+    placed = []  # (pidx, ct, strength) in player order
+
+    for pidx in range(n):
+        choice = choices.get(str(pidx))
+        if choice:
+            ct = choice["card_type"]
+            day = choice["day"]
+            player = state["players"][pidx]
+            card_info = next((c for c in player["hand_cards"] if c["card_type"] == ct), None)
+            strength = card_info.get("strength", "normal") if card_info else "normal"
+            if _play_from_hand(state, pidx, ct, day):
+                arr_label = {1: "1st", 2: "2nd", 3: "3rd"}.get(player["cards"][day - 1]["arrival"], "#?")
+                _log(state, f"{player['name']} played {('★' if strength == 'strong' else '')}{LOCATION_NAMES[ct]} on Day {day} — {arr_label} to arrive")
+                placed.append((pidx, ct, strength))
+
+    state["turn_count"] += 1
+
+    # Build ability resolution queue
+    queue = [pidx for (pidx, ct, strength) in placed]
+    cards_map = {str(pidx): {"ct": ct, "strength": strength}
+                 for (pidx, ct, strength) in placed}
+
+    state["ability_resolution_queue"] = queue
+    state["ability_resolution_cards"] = cards_map
+    state["round_choices"] = {}
+
+    # Set phase to "game" for ability resolution
+    state["phase"] = "game"
+
+    # Set up the first player's ability
+    _advance_ability_queue(game)
+
+
+def _ai_choose_play(state, pidx):
+    """AI picks a card from hand and an empty day slot. Returns (card_type, day) or (None, None)."""
+    player = state["players"][pidx]
+    hand = player.get("hand_cards", [])
+    if not hand:
+        return None, None
+
+    empty_days = [d + 1 for d, c in enumerate(player["cards"]) if c is None]
+    if not empty_days:
+        return None, None
+
+    # Score each (card, day) pair — prefer arrival value + day-match bonus
+    best_score, best_ct, best_day = -999, None, None
+
+    for card in hand:
+        ct = card["card_type"]
+        n_arr = len(state["arrivals"].get(str(ct), []))
+        pts_arr = CARD_PTS[ct]
+        arrival_val = pts_arr[n_arr] if n_arr < len(pts_arr) else pts_arr[-1]
+
+        for day in empty_days:
+            day_match_bonus = 1 if day == ct else 0
+            score = arrival_val + day_match_bonus
+            if score > best_score:
+                best_score, best_ct, best_day = score, ct, day
+
+    return best_ct, best_day
+
+
+def _process_ai_ability_queue(game):
+    """While the current player in the ability queue is an AI, auto-resolve their ability."""
+    state = game["state"]
+    ai_set = set(state.get("ai_players", []))
+    limit = 20
+    i = 0
+    while (state["phase"] == "game"
+           and state.get("ability_resolution_queue")
+           and state["current_player_idx"] in ai_set
+           and i < limit):
+        pidx = state["current_player_idx"]
+        # Auto-resolve: use existing AI ability logic
+        card_info = state.get("ability_resolution_cards", {}).get(str(pidx), {})
+        ct = card_info.get("ct")
+        strength = card_info.get("strength", "normal")
+        if ct:
+            # Find the day this card was placed
+            day = _find_card_day(state, pidx, ct)
+            _rollout_ability(state, pidx, ct, strength, "basic", current_day=day)
+            player = state["players"][pidx]
+            _log(state, f"↳ {player['name']} ability auto-resolved ({LOCATION_NAMES.get(ct, ct)})")
+        # Advance queue
+        if state.get("ability_resolution_queue"):
+            state["ability_resolution_queue"].pop(0)
+        _advance_ability_queue(game)
+        i += 1
+
+    # If back to choosing and there are AI players, process their choices
+    if state["phase"] == "choosing":
+        _process_choosing_ai(game)
+
+
+def _process_choosing_ai(game):
+    """Auto-submit choices for all AI players in the choosing phase."""
+    state = game["state"]
+    if state["phase"] != "choosing":
+        return
+    ai_set = set(state.get("ai_players", []))
+    n = len(state["players"])
+
+    for pidx in range(n):
+        if pidx in ai_set and str(pidx) not in state["round_choices"]:
+            ct, day = _ai_choose_play(state, pidx)
+            if ct is not None and day is not None:
+                state["round_choices"][str(pidx)] = {"card_type": ct, "day": day}
+                player = state["players"][pidx]
+                _log(state, f"{player['name']} chose a card for this round")
+
+    # Check if all have chosen
+    if len(state["round_choices"]) == n:
+        _resolve_round(game)
+        if state["phase"] == "game":
+            _process_ai_ability_queue(game)
+
 
 def _state_for_player(game, my_pidx):
     state = game["state"]
@@ -425,10 +678,14 @@ def _state_for_player(game, my_pidx):
             # In draft phase: expose draft_cards for self
             p["draft_cards"] = player.get("draft_cards", []) if i == my_pidx else []
             # cards is empty during draft
-        elif state["phase"] in ("arrangement", "game", "end"):
+        elif state["phase"] in ("arrangement", "game", "end", "choosing"):
             # Always expose draft_cards for self (needed for arrangement screen)
             if i == my_pidx:
                 p["draft_cards"] = player.get("draft_cards", [])
+
+        # hand_cards: expose own hand fully, opponents only get count
+        p["hand_cards"] = player.get("hand_cards", []) if i == my_pidx else []
+        p["hand_cards_count"] = len(player.get("hand_cards", []))
 
         if state["phase"] == "arrangement":
             # Show own cards with strength, hide opponents
@@ -438,11 +695,22 @@ def _state_for_player(game, my_pidx):
                     p["cards"].append(card_copy)
                 else:
                     p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None})
+        elif state["phase"] == "choosing":
+            # In choosing phase, cards is a list of None or placed cards
+            for c in player["cards"]:
+                if c is None:
+                    p["cards"].append(None)
+                elif i == my_pidx or c.get("face_up"):
+                    p["cards"].append(dict(c))
+                else:
+                    p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None, "banked": False})
         else:
             # game/end phase
             peeked_by_me = state.get("peeked_cards", {}).get(str(my_pidx), [])
             for d_idx, c in enumerate(player["cards"]):
-                if i == my_pidx or c["face_up"]:
+                if c is None:
+                    p["cards"].append(None)
+                elif i == my_pidx or c["face_up"]:
                     card_copy = dict(c)
                     # Include strength and banked for face-up cards
                     p["cards"].append(card_copy)
@@ -482,9 +750,14 @@ def _state_for_player(game, my_pidx):
         out["draft_order"] = state.get("draft_order", [])
         out["draft_pick_idx"] = state.get("draft_pick_idx", 0)
 
-    if state["phase"] in ("game", "end", "date_resolution"):
+    if state["phase"] in ("game", "end", "date_resolution", "choosing"):
         out["scores"] = _calculate_scores(state)
         out["arrivals_display"] = _arrivals_display(state)
+
+    if state["phase"] == "choosing":
+        out["round_choices_submitted"] = len(state.get("round_choices", {}))
+        out["round_choices_total"] = len(state["players"])
+        out["i_have_chosen"] = str(my_pidx) in state.get("round_choices", {})
 
     if state["phase"] in ("date_resolution", "end"):
         out["date_queue"] = state.get("date_queue", [])
@@ -576,9 +849,11 @@ def _process_draft_picks(game):
         ct = _ai_draft_pick(state, cur_drafter)
         _do_draft_pick(state, cur_drafter, ct)
         i += 1
-    # If draft complete, assign normal cards and process AI arrangements
+    # If draft complete, assign normal cards and process AI arrangements or choosing
     if state["phase"] == "arrangement":
         _process_ai_arrangements(game)
+    elif state["phase"] == "choosing":
+        _process_choosing_ai(game)
 
 def _do_draft_pick(state, pidx, card_type):
     """Execute a single draft pick. Returns True if successful."""
@@ -1331,12 +1606,19 @@ def _process_ai_turns(game):
         state["phase"] == "game"
         and state["current_player_idx"] in ai_set
         and not state["pending_action"]
+        and not state.get("ability_resolution_queue")
         and i < limit
     ):
         _ai_take_turn(game)
         i += 1
     if state["phase"] == "date_resolution":
         _process_date_ai_moves(game)
+    # Handle ability queue for AI
+    if state["phase"] == "game" and state.get("ability_resolution_queue"):
+        _process_ai_ability_queue(game)
+    # Handle choosing phase for AI
+    if state["phase"] == "choosing":
+        _process_choosing_ai(game)
 
 # ── routes ────────────────────────────────────────────────────────────────────
 
@@ -1467,6 +1749,8 @@ def api_draft_pick(game_id, token):
         _process_ai_arrangements(game)
         if state["phase"] == "game":
             _process_ai_turns(game)
+    elif state["phase"] == "choosing":
+        _process_choosing_ai(game)
     else:
         # Process any consecutive AI picks
         _process_draft_picks(game)
@@ -1474,6 +1758,8 @@ def api_draft_pick(game_id, token):
             _process_ai_arrangements(game)
             if state["phase"] == "game":
                 _process_ai_turns(game)
+        elif state["phase"] == "choosing":
+            _process_choosing_ai(game)
 
     return jsonify(_state_for_player(game, pidx))
 
@@ -1505,6 +1791,44 @@ def api_arrange(game_id, token):
         state["phase"] = "game"
         _process_ai_turns(game)
     return jsonify(_state_for_player(game, pidx))
+
+@app.route("/api/game/<game_id>/<token>/choose_play", methods=["POST"])
+def api_choose_play(game_id, token):
+    """Submit a card+day choice for the current simultaneous round."""
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
+    if state["phase"] != "choosing":
+        return jsonify({"error": "Not in choosing phase"}), 400
+    if str(pidx) in state.get("round_choices", {}):
+        return jsonify({"error": "Already chosen this round"}), 400
+
+    data = request.json or {}
+    card_type = int(data.get("card_type", -1))
+    day = int(data.get("day", -1))
+
+    player = state["players"][pidx]
+    hand = player.get("hand_cards", [])
+    if not any(c["card_type"] == card_type for c in hand):
+        return jsonify({"error": "Card not in hand"}), 400
+    empty_days = [d + 1 for d, c in enumerate(player["cards"]) if c is None]
+    if day not in empty_days:
+        return jsonify({"error": "Day slot not available"}), 400
+
+    state.setdefault("round_choices", {})[str(pidx)] = {"card_type": card_type, "day": day}
+    _log(state, f"{player['name']} chose a card for this round (hidden until reveal)")
+
+    n = len(state["players"])
+    if len(state["round_choices"]) == n:
+        _resolve_round(game)
+        if state["phase"] == "game":
+            _process_ai_ability_queue(game)
+        elif state["phase"] == "choosing":
+            _process_choosing_ai(game)
+
+    return jsonify(_state_for_player(game, pidx))
+
 
 @app.route("/api/game/<game_id>/<token>/flip", methods=["POST"])
 def api_flip(game_id, token):
@@ -1671,8 +1995,14 @@ def api_bank_decision(game_id, token):
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
-    _advance_turn(state)
-    _process_ai_turns(game)
+    if state.get("ability_resolution_queue") is not None and len(state.get("ability_resolution_queue", [])) > 0:
+        # Hand mode: pop current player from queue and advance
+        state["ability_resolution_queue"].pop(0)
+        _advance_ability_queue(game)
+        _process_ai_ability_queue(game)
+    else:
+        _advance_turn(state)
+        _process_ai_turns(game)
     return jsonify(_state_for_player(game, pidx))
 
 @app.route("/api/game/<game_id>/<token>/use_pocket", methods=["POST"])
@@ -2016,8 +2346,14 @@ def api_action(game_id, token):
         state["pending_action"] = None
         state["action_ctx"] = {}
         state["action_message"] = None
-        _advance_turn(state)
-        _process_ai_turns(game)
+        if state.get("ability_resolution_queue") is not None and len(state.get("ability_resolution_queue", [])) > 0:
+            # Hand mode: pop current player from queue and advance
+            state["ability_resolution_queue"].pop(0)
+            _advance_ability_queue(game)
+            _process_ai_ability_queue(game)
+        else:
+            _advance_turn(state)
+            _process_ai_turns(game)
 
     resp = _state_for_player(game, pidx)
     resp["action_result"] = {
@@ -2064,8 +2400,14 @@ def api_cancel(game_id, token):
     state["pending_action"] = None
     state["action_ctx"] = {}
     state["action_message"] = None
-    _advance_turn(state)
-    _process_ai_turns(game)
+    if state.get("ability_resolution_queue") is not None and len(state.get("ability_resolution_queue", [])) > 0:
+        # Hand mode: pop current player from queue and advance
+        state["ability_resolution_queue"].pop(0)
+        _advance_ability_queue(game)
+        _process_ai_ability_queue(game)
+    else:
+        _advance_turn(state)
+        _process_ai_turns(game)
     return jsonify(_state_for_player(game, pidx))
 
 @app.route("/api/game/<game_id>/<token>/end_game", methods=["POST"])
@@ -2243,10 +2585,12 @@ def api_room_start(code):
         game = {"state": state, "tokens": game_tokens}
         GAMES[game_id] = game
 
-        # Process AI draft picks and arrangements
+        # Process AI draft picks, arrangements, and choosing phase
         _process_draft_picks(game)
         if state["phase"] == "game":
             _process_ai_turns(game)
+        elif state["phase"] == "choosing":
+            _process_choosing_ai(game)
 
         for i, rp in enumerate(room["players"]):
             rp["game_token"] = game_tokens[i]
