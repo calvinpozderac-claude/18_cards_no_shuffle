@@ -1483,6 +1483,73 @@ def api_bank_decision(game_id, token):
     _process_ai_turns(game)
     return jsonify(_state_for_player(game, pidx))
 
+@app.route("/api/game/<game_id>/<token>/use_pocket", methods=["POST"])
+def api_use_pocket(game_id, token):
+    """Use the player's pocketed ability instead of flipping a card this turn."""
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
+    if state["phase"] != "game" or state["pending_action"]:
+        return jsonify({"error": "Cannot use pocketed ability now"}), 400
+    if pidx != state["current_player_idx"]:
+        return jsonify({"error": "Not your turn"}), 400
+
+    pocket = state["pocketed_abilities"][pidx]
+    if pocket is None:
+        return jsonify({"error": "No pocketed ability"}), 400
+
+    ct = pocket["card_type"]
+    strength = pocket["strength"]
+    state["pocketed_abilities"][pidx] = None
+
+    pending, msg = None, None
+
+    if ct == 1:
+        pending = "lock_pick_day"
+        msg = f"Pocketed Lock ({'strong' if strength == 'strong' else 'normal'}): Choose a day to lock."
+        state["action_ctx"] = {"actor": pidx, "strength": strength}
+    elif ct == 2:
+        if strength == "strong":
+            pending = "swap_own_1"
+            msg = "Pocketed Swap Own (strong): Click one of your cards — first of two to swap."
+        else:
+            pending = "adj_swap_own"
+            msg = "Pocketed Swap Own (normal): Click one of your cards to shift to an adjacent day."
+        state["action_ctx"] = {"actor": pidx, "strength": strength}
+    elif ct == 3:
+        if strength == "strong":
+            pending = "swap_other_1"
+            msg = "Pocketed Swap Others (strong): Click an opponent's card — first of two to swap."
+        else:
+            pending = "adj_swap_other"
+            msg = "Pocketed Swap Others (normal): Click an opponent's card to shift to an adjacent day."
+        state["action_ctx"] = {"actor": pidx, "strength": strength}
+    elif ct == 4:
+        count = 2 if strength == "strong" else 1
+        pending = "peek_pick_1"
+        msg = f"Pocketed Peek ({'2 cards' if strength == 'strong' else '1 card'}): Click an opponent's face-down card."
+        state["action_ctx"] = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
+    elif ct == 6:
+        if strength == "strong":
+            pending = "flip_own_down"
+            msg = "Pocketed Flip Down (strong): Click one of YOUR face-up cards to flip it down."
+        else:
+            pending = "flip_other_down"
+            msg = "Pocketed Flip Down (normal): Click an OPPONENT'S face-up card to flip it down."
+        state["action_ctx"] = {"actor": pidx, "strength": strength}
+
+    _log(state, f"{state['players'][pidx]['name']} used pocketed {LOCATION_NAMES[ct]} ability")
+
+    if pending:
+        state["pending_action"] = pending
+        state["action_message"] = msg
+    else:
+        _advance_turn(state)
+        _process_ai_turns(game)
+
+    return jsonify(_state_for_player(game, pidx))
+
 @app.route("/api/game/<game_id>/<token>/action", methods=["POST"])
 def api_action(game_id, token):
     game, pidx = _resolve(game_id, token)
@@ -1793,43 +1860,6 @@ def api_set_arrival(game_id, token):
     _process_ai_turns(game)
     resp = _state_for_player(game, pidx)
     resp["action_result"] = {"error": None, "done": True, "message": msg}
-    return jsonify(resp)
-
-@app.route("/api/game/<game_id>/<token>/set_reorder", methods=["POST"])
-def api_set_reorder(game_id, token):
-    """For type 4 strong: set a new arrival order."""
-    game, pidx = _resolve(game_id, token)
-    if game is None or pidx is None:
-        return jsonify({"error": "not found"}), 404
-    state = game["state"]
-    if state["pending_action"] != "switch_arrival_reorder":
-        return jsonify({"error": "No reorder pending"}), 400
-    if pidx != state["current_player_idx"]:
-        return jsonify({"error": "Not your turn"}), 400
-
-    ctx = state["action_ctx"]
-    sw_ct = ctx["sw_ct"]
-    k = str(sw_ct)
-    current_arr = state["arrivals"].get(k, [])
-    new_order = request.json.get("new_order", [])
-
-    # Validate: must be a permutation of current arrivals
-    if sorted(new_order) != sorted(current_arr):
-        return jsonify({"error": "Invalid permutation of current arrivals"}), 400
-
-    state["arrivals"][k] = list(new_order)
-    _renumber(state, sw_ct)
-
-    actor_name = state["players"][pidx]["name"]
-    _log(state, f"↳ {actor_name} used Switch Arrival (strong): reordered {LOCATION_NAMES[sw_ct]}")
-
-    state["pending_action"] = None
-    state["action_ctx"] = {}
-    state["action_message"] = None
-    _advance_turn(state)
-    _process_ai_turns(game)
-    resp = _state_for_player(game, pidx)
-    resp["action_result"] = {"error": None, "done": True, "message": f"Reordered arrivals at {LOCATION_NAMES[sw_ct]}!"}
     return jsonify(resp)
 
 @app.route("/api/game/<game_id>/<token>/cancel", methods=["POST"])

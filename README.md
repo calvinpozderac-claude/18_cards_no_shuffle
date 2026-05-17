@@ -1,101 +1,102 @@
-# DON'T BE THE THIRD WHEEL!
-### A game of romantic scheduling and strategic sabotage — 2–3 players
+# Don't Be the Third Wheel!
+
+A strategic card game for 3 players — romantic scheduling, private information, and mutual sabotage.
 
 ---
 
-## OVERVIEW
-Each player is juggling six potential dates across six days. Everyone shares the same six locations, but the timing is everything. Show up to a date with exactly one other person and it's romantic — show up as a third wheel and suffer the consequences.
+## Setup
+
+**Snake Draft:** Players take turns picking 1 strong card each from a pool of 6 (one per location). With 3 players and a snake draft, each player gets exactly 2 strong cards. Everyone then receives 1 normal card for each type they did NOT draft, giving every player 6 cards total.
+
+Each player secretly arranges their 6 cards face-down across 6 day slots (Day 1–6). Only you can see your own arrangement.
 
 ---
 
-## COMPONENTS
-- 18 cards (6 identical sets of locations 1–6)
-- This manual
+## Gameplay
 
-**The six locations:**
+On your turn, do one of the following:
+- **Flip** one of your face-down cards face-up (registers your arrival at that location)
+- **Use your pocketed ability** (if you have one stored)
 
-| # | Location |
-|---|----------|
-| 1 | Coffee Shop |
-| 2 | Park |
-| 3 | Cinema |
-| 4 | Restaurant |
-| 5 | Beach |
-| 6 | Museum |
+After flipping, you choose what to do with the card's ability:
+- **Use Now** — resolve the ability immediately
+- **Pocket for Later** — save it for a future turn (replaces any previously pocketed ability)
+- **Skip** — discard the ability unused
 
----
+The **Beach (ct=5) ability** is always decided immediately and cannot be pocketed.
 
-## SETUP
-1. Each player takes one full set of cards (1–6) and, **secretly**, arranges them face-down in a row of six slots. Each slot is a **Day** (Day 1 through Day 6). Each location goes to exactly one day.
-2. Once all players have locked in their schedules, reveal nothing — cards stay face-down.
-3. Randomly determine who goes first.
+Only one ability can be pocketed at a time.
 
 ---
 
-## ON YOUR TURN
-Flip one of your **face-down** cards **face-up**. This represents you showing up to that date.
+## Card Types, Abilities, and Scoring
 
-**Arrival position** is tracked per location per day:
-- **1st to arrive** → card is placed *above* your row
-- **2nd to arrive** → card stays *in line*
-- **3rd to arrive** → card is placed *below* your row
+Arrival scoring applies only when 2 or more players arrive at the same location (type). Solo arrivals score 0.
 
-After flipping, immediately resolve that card's ability (see below), then play passes clockwise.
+### 1 — Coffee Shop
+- **Strong:** Lock an entire day — all cards on that day become immune to abilities
+- **Normal:** Lock 2 cards on a chosen day
+- **Scoring:** 1st +1 · 2nd +2 · 3rd −1
 
----
+### 2 — Park
+- **Strong:** Swap any two of your own cards (day slots)
+- **Normal:** Shift one of your cards to an adjacent day (wraps)
+- **Scoring:** 1st +1 · 2nd +2 · 3rd −1
 
-## CARD ABILITIES
-Each location has a special ability that triggers the moment you flip it.
+### 3 — Cinema
+- **Strong:** Swap any two cards of one opponent
+- **Normal:** Shift one opponent's card to an adjacent day (wraps)
+- **Scoring:** 1st +3 · 2nd +1 · 3rd −2
 
-| # | Location | Ability |
-|---|----------|---------|
-| 1 | Coffee Shop | Flip one of **another player's** face-up cards face-down |
-| 2 | Park | Flip one of **your own** face-up cards face-down |
-| 3 | Cinema | Swap the Day slots of two cards belonging to **another player** |
-| 4 | Restaurant | Swap the Day slots of **two of your own** cards |
-| 5 | Beach | Change the arrival order of one of **an opponent's** face-up cards |
-| 6 | Museum | Change the arrival order of one of **your own** face-up cards |
+### 4 — Restaurant *(arrive LAST for best score!)*
+- **Strong:** Peek at 2 opponents' face-down cards (private information — only you see it)
+- **Normal:** Peek at 1 opponent's face-down card
+- **Scoring:** 1st −1 · 2nd +1 · 3rd +3
 
-If a card's ability has no valid target, it is skipped.
+### 5 — Beach
+- **Strong:** Bank +2 pts now (opt out of arrival scoring and day-match bonus)
+- **Normal:** Bank +1 pt now
+- **Scoring:** 1st +5 · 2nd +3 · 3rd −4
 
----
-
-## END OF GAME
-The game ends when all cards have been flipped face-up. Score every location/day combination where **more than one player** showed up.
-
-| Players at same location on same day | 1st arrival | 2nd arrival | 3rd arrival |
-|--------------------------------------|------------|-------------|-------------|
-| **2 players** | +1 pt | +2 pts | — |
-| **3 players** | 0 pts | 0 pts | **−1 pt** |
-| **1 player** | No points | — | — |
-
-The player with the **most points** wins. In a tie, the player with the most successful 2-person dates wins.
+### 6 — Museum
+- **Strong:** Flip one of your own face-up cards back down
+- **Normal:** Flip an opponent's face-up card down
+- **Scoring:** 1st +3 · 2nd +1 · 3rd ±0
 
 ---
 
-## TIPS
-- Being **second** to a 2-person date is better than being first — but only if no one else shows up.
-- Use abilities to break up rivals' dates or rescue yourself from a third-wheel situation.
-- Your opponents can see which of your cards are face-up, but not what's still hidden — plan accordingly.
+## Arrival Queue
+
+Arrival queues are **global per card type** (not per day). The first player to flip a given type is 1st in that type's global queue, regardless of which day slot the card occupies.
+
+Points are awarded when 2 or more players arrive at the same location type.
 
 ---
 
-## RUNNING THE DIGITAL VERSION
+## Day-Match Bonus
 
-**Desktop (tkinter):**
-```bash
-python3 game.py
+If your card of type N is placed on Day N AND is face-up at game end (and not banked):
+- If 2 or more players match on that day: **+2 pts** (normal card) or **+1 pt** (strong card)
+- If only 1 player matches that day: **−1 pt**
+
+---
+
+## End of Game
+
+The game ends when all 18 cards are face-up.
+
+**Final score = arrival points + day-match bonuses + banked points**
+
+Highest score wins.
+
+---
+
+## Running the Digital Version
+
 ```
-
-**Web (Flask + ngrok):**
-```bash
-# Install dependencies
 pip install flask
-
-# Start the server
 python3 app.py
-
-# In a second terminal, expose it publicly
-ngrok http 5000
+# Visit http://localhost:5000
 ```
-Share the ngrok URL with your players. All players use the same URL and pass the device for their turn.
+
+Players on separate devices can use the room code system to find each other without sharing URLs directly.

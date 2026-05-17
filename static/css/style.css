@@ -70,6 +70,9 @@ body {
 }
 .btn-primary:hover { box-shadow: 0 4px 20px var(--accent-glow); }
 .btn-cancel  { background: var(--surface-3); color: var(--text-2); border: 1px solid var(--border-hi); }
+.btn-pocket  { background: #3a2060; color: #FFD700; border: 1px solid #7a50c0; }
+.btn-pocket:hover { background: #4a2880; border-color: #FFD700; }
+.btn-pocket:disabled { opacity: .45; cursor: not-allowed; }
 .btn-green   { background: var(--green); color: #fff; }
 .btn-red     { background: var(--red); color: #fff; }
 .btn-outline {
@@ -349,6 +352,8 @@ body {
 .card.face-down.other:hover { transform: none; }
 .mystery-symbol { font-size: 1.6rem; opacity: .3; }
 .mystery-label  { font-size: .68rem; color: var(--text-muted); margin-top: 3px; }
+.card.face-down.other.peeked { border-color: #7a50c0; background: #1e1040; }
+.peek-eye { font-size: 1.1rem; }
 
 /* face-down — own */
 .card.face-down.own {

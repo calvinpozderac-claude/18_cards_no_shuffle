@@ -2,10 +2,10 @@
 const CARD_SCORING = {
   1: "1st+1 · 2nd+2 · 3rd−1",
   2: "1st+1 · 2nd+2 · 3rd−1",
-  3: "1st+2 · 2nd+1 · 3rd−1",
-  4: "1st+3 · 2nd+2 · 3rd−1",
-  5: "1st+3 · 2nd+3 · 3rd−2",
-  6: "1st+2 · 2nd+1 · 3rd±0",
+  3: "1st+3 · 2nd+1 · 3rd−2",
+  4: "1st−1 · 2nd+1 · 3rd+3",
+  5: "1st+5 · 2nd+3 · 3rd−4",
+  6: "1st+3 · 2nd+1 · 3rd±0",
 };
 
 const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";
@@ -673,12 +673,19 @@ function gameHTML(state) {
           ? "Your turn — click one of your face-down cards to flip it."
           : `Waiting for ${turnPlayerName} to play…`}
     </span>
-    ${isMyTurn && state.pending_action && state.pending_action !== "bank_decision"
+    ${isMyTurn && state.pending_action && state.pending_action !== "bank_decision" && state.pending_action !== "pocket_choice"
       ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>`
+      : ""}
+    ${isMyTurn && !state.pending_action && state.pocketed_ability
+      ? `<button class="btn btn-pocket" id="btn-use-pocket">
+           🎴 Use Pocketed: ${LOCATION_NAMES[state.pocketed_ability.card_type]} ${state.pocketed_ability.strength === 'strong' ? '★' : ''}
+         </button>`
       : ""}
   </div>
 
   ${bankModal}
+
+  ${buildPocketChoiceModal(state)}
 
   ${buildLockDayPicker(state)}
 
@@ -728,6 +735,30 @@ function buildBankModal(state) {
     <div class="bank-modal-btns">
       <button class="btn btn-primary" id="btn-bank-yes">Bank (+${pts} pts)</button>
       <button class="btn btn-outline" id="btn-bank-no">Don't Bank (day-match)</button>
+    </div>
+  </div>
+</div>`;
+}
+
+function buildPocketChoiceModal(state) {
+  if (state.pending_action !== "pocket_choice") return "";
+  if (state.current_player_idx !== MY_IDX) return "";
+  const ctx = state.action_ctx || {};
+  const ct = ctx.pocket_ct;
+  const s = ctx.pocket_strength;
+  const pocketFull = ctx.pocket_full;
+  const abilityName = CARD_ABILITIES[ct] ? (s === "strong" ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal) : "";
+  return `
+<div class="bank-modal-overlay" id="pocket-modal">
+  <div class="bank-modal">
+    <h3 class="bank-modal-title">${LOCATION_NAMES[ct]} Ability${s === 'strong' ? ' ★' : ''}</h3>
+    <p class="bank-modal-desc" style="font-size:.85rem">${abilityName}</p>
+    <div class="bank-modal-btns" style="flex-direction:column;gap:8px">
+      <button class="btn btn-primary" id="btn-pocket-use-now">Use Now</button>
+      <button class="btn btn-pocket" id="btn-pocket-save" ${pocketFull ? 'disabled title="Pocket is full — use or skip existing first"' : ''}>
+        🎴 Pocket for Later ${pocketFull ? "(full)" : ""}
+      </button>
+      <button class="btn btn-cancel" id="btn-pocket-skip">Skip</button>
     </div>
   </div>
 </div>`;
@@ -838,24 +869,11 @@ function cardHTML(state, pi, day, card) {
       else valid = day === lockDay && !isLocked;
     }
 
-    if (action === "switch_arrival_pick") {
-      const k = `${card.card_type}`;
-      valid = card.face_up && (arrivals[k] || []).length >= 2;
-    }
-    if (action === "switch_arrival_swap_1") {
-      const sw_ct = ctx.sw_ct;
-      const k = `${sw_ct}`;
-      valid = card.face_up && card.card_type === sw_ct && pi !== -1 && (arrivals[k] || []).includes(pi);
-    }
-    if (action === "switch_arrival_swap_2") {
-      const sw_ct = ctx.sw_ct;
-      const k = `${sw_ct}`;
-      const first = ctx.swap_first_pi;
-      if (pi === first && card.card_type === sw_ct && card.face_up) stateCls = "selected-first";
-      else valid = card.face_up && card.card_type === sw_ct && (arrivals[k] || []).includes(pi) && pi !== first;
+    if (action === "peek_pick_1" || action === "peek_pick_2") {
+      valid = !isMe && !card.face_up;
     }
 
-    if (action === "set_arrival" || action === "switch_arrival_reorder") valid = false;
+    if (action === "set_arrival") valid = false;
 
     if (!stateCls) stateCls = valid ? "target-valid" : "dimmed";
   }
@@ -863,8 +881,19 @@ function cardHTML(state, pi, day, card) {
   // Lock indicator
   const lockBadge = isLocked ? '<span class="lock-badge">🔒</span>' : "";
 
-  // Opponent face-down: mystery card
+  // Opponent face-down: mystery card (or peeked)
   if (!card.face_up && !isMe) {
+    if (card.peeked && card.card_type) {
+      return `
+<button class="card face-down other peeked ${stateCls}"
+        data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
+  ${lockBadge}
+  <span class="peek-eye">👁</span>
+  <span class="card-num" style="opacity:.7">${card.card_type}</span>
+  <span class="card-name" style="font-size:.6rem;opacity:.7">${LOCATION_NAMES[card.card_type]}</span>
+  <span class="mystery-label" style="font-size:.55rem;color:#FFD700">peeked</span>
+</button>`;
+    }
     return `
 <button class="card face-down other ${stateCls}"
         data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
@@ -952,6 +981,33 @@ function bindGame(state, prevSnap = null) {
     });
   }
 
+  // Pocket choice modal
+  if (state.pending_action === "pocket_choice" && state.current_player_idx === MY_IDX) {
+    document.getElementById("btn-pocket-use-now")?.addEventListener("click", async () => {
+      const resp = await apiPost(gameUrl("action"), { choice: "use_now" });
+      G = resp; render(G);
+      if (G.action_message) showMsg(G.action_message);
+    });
+    document.getElementById("btn-pocket-save")?.addEventListener("click", async () => {
+      const resp = await apiPost(gameUrl("action"), { choice: "pocket" });
+      const result = resp.action_result || {};
+      if (result.error) { showMsg(result.error, "error"); return; }
+      G = resp; render(G);
+      showMsg("Ability pocketed for later!", "success");
+    });
+    document.getElementById("btn-pocket-skip")?.addEventListener("click", async () => {
+      const resp = await apiPost(gameUrl("action"), { choice: "skip" });
+      G = resp; render(G);
+    });
+  }
+
+  // Use pocketed ability button
+  document.getElementById("btn-use-pocket")?.addEventListener("click", async () => {
+    G = await apiPost(gameUrl("use_pocket"));
+    render(G);
+    if (G.action_message) showMsg(G.action_message);
+  });
+
   document.querySelectorAll(".card").forEach(btn => {
     if (!btn.disabled) {
       btn.addEventListener("click", () => handleCardClick(+btn.dataset.pi, +btn.dataset.day));
@@ -982,25 +1038,6 @@ async function handleCardClick(pi, day) {
   }
 
   if (action) {
-    // Check if this is a switch_arrival flow needing special modal
-    if (action === "switch_arrival_pick") {
-      const resp = await apiPost(gameUrl("action"), { player_idx: pi, day });
-      const result = resp.action_result || {};
-      if (result.error) { showMsg(result.error, "error"); return; }
-      if (result.needs_position && result.arrival_info) {
-        G = resp; render(G);
-        if (result.arrival_info.reorder) {
-          showReorderModal(result.arrival_info);
-        } else {
-          showSwapArrivalModal(result.arrival_info);
-        }
-        return;
-      }
-      G = resp; render(G);
-      if (result.message) showMsg(result.message, "success");
-      return;
-    }
-
     const resp = await apiPost(gameUrl("action"), { player_idx: pi, day });
     const result = resp.action_result || {};
     if (result.error) { showMsg(result.error, "error"); return; }
@@ -1056,87 +1093,6 @@ function showArrivalModal(info) {
     G = await apiPost(gameUrl("cancel"));
     render(G);
   };
-}
-
-/* ── reorder modal (type 4 strong) ──────────────────────────────────────── */
-function showReorderModal(info) {
-  document.getElementById("modal-title").textContent =
-    `Reorder Arrivals: ${info.location} on Day ${info.day}`;
-  document.getElementById("modal-sub").textContent =
-    "Drag or click to set your desired arrival order:";
-
-  const pidxs = info.arrival_pidxs || [];
-  const names = info.arrival_list || [];
-  const opts = document.getElementById("modal-options");
-  opts.innerHTML = `<p style="font-size:.78rem;color:#CCAAFF;margin-bottom:8px">Assign new arrival position for each player:</p>`;
-
-  // Simple UI: numbered radio buttons for each player
-  const assignments = {};
-  pidxs.forEach((pidx, i) => {
-    const div = document.createElement("div");
-    div.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:6px;background:#2a1a4e;padding:8px;border-radius:6px";
-    div.innerHTML = `<span style="flex:1;color:#FFD700">${names[i]}</span>
-      <span style="font-size:.8rem;color:#CCAAFF">Position:</span>
-      ${pidxs.map((_, j) =>
-        `<label style="display:flex;align-items:center;gap:3px;font-size:.78rem">
-          <input type="radio" name="pos-${pidx}" value="${j+1}" ${j === i ? "checked" : ""}> ${j+1}
-        </label>`
-      ).join("")}`;
-    opts.appendChild(div);
-    assignments[pidx] = i + 1;
-  });
-
-  document.getElementById("modal-overlay").classList.remove("hidden");
-  document.getElementById("modal-confirm").style.display = "";
-  document.getElementById("modal-cancel").textContent = "Cancel";
-
-  document.getElementById("modal-confirm").onclick = async () => {
-    // Build new order from radio selections
-    const newOrder = [];
-    const posMap = {};
-    pidxs.forEach(pidx => {
-      const sel = document.querySelector(`input[name="pos-${pidx}"]:checked`);
-      const pos = sel ? parseInt(sel.value) : 1;
-      posMap[pos] = pidx;
-    });
-    // Build in position order
-    const positions = Object.keys(posMap).map(Number).sort((a,b)=>a-b);
-    for (const pos of positions) {
-      newOrder.push(posMap[pos]);
-    }
-    // Fallback: if not all positions unique, use original order
-    const finalOrder = newOrder.length === pidxs.length ? newOrder : [...pidxs];
-    closeModal();
-    const resp = await apiPost(gameUrl("set_reorder"), { new_order: finalOrder });
-    const result = resp.action_result || {};
-    if (result.error) { showMsg(result.error, "error"); return; }
-    G = resp; render(G);
-    if (result.message) showMsg(result.message, "success");
-  };
-  document.getElementById("modal-cancel").onclick = async () => {
-    closeModal();
-    G = await apiPost(gameUrl("cancel"));
-    render(G);
-  };
-}
-
-/* ── swap arrival modal (type 4 normal) ─────────────────────────────────── */
-function showSwapArrivalModal(info) {
-  document.getElementById("modal-title").textContent =
-    `Swap Arrivals: ${info.location} on Day ${info.day}`;
-  document.getElementById("modal-sub").textContent =
-    "Click two players to swap their arrival positions:";
-
-  const pidxs = info.arrival_pidxs || [];
-  const names = info.arrival_list || [];
-  const opts = document.getElementById("modal-options");
-  opts.innerHTML = "";
-
-  // The arrival swap uses the action endpoint with clicks
-  // Close modal and let user click on the board
-  closeModal();
-  // Show a guide message
-  showMsg("Click a player card at that location to swap arrivals.", "");
 }
 
 function showScoresModal(state) {
@@ -1228,7 +1184,7 @@ function endHTML(state) {
   <div class="breakdown">
     <h3>Date Results</h3>
     ${arrivals.map(r => {
-      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[3,2,-1],5:[3,3,-2],6:[2,1,0]})[r.card_type] || [1,2,-1];
+      const pts = ({1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]})[r.card_type] || [1,2,-1];
       let note, cls;
       if (r.n === 1) {
         note = "solo — no arrival points";
