@@ -651,100 +651,76 @@ function choosingHTML(state) {
   const hand = me.hand_cards || [];
   const submitted = state.round_choices_submitted || 0;
   const total = state.round_choices_total || state.players.length;
-  const iChose = state.i_have_chosen;
+  const iHaveChosen = state.i_have_chosen;
+  const banked = state.pocketed_ability;
+  const locks = state.locks || [];
+  const scores = state.scores || {};
   // Round number = number of cards placed so far on my board + 1
   const cardsPlaced = (me.cards || []).filter(c => c !== null && c !== undefined).length;
   const round = cardsPlaced + 1;
 
-  let myArea = "";
-  if (iChose) {
-    myArea = `<div class="choosing-waiting">
-      <p style="color:#FFD700;font-size:1rem">Choice locked in!</p>
-      <div class="spinner" style="margin:10px auto"></div>
-      <p style="color:#8870aa;font-size:.82rem">Waiting for others… (${submitted}/${total} ready)</p>
-    </div>`;
-  } else {
-    myArea = `
-<div class="choosing-hand">
-  <p class="choosing-label">Your hand — click a card to select, then click an empty Day slot</p>
-  <div class="hand-cards">
-    ${hand.map(card => {
-      const s = card.strength || "normal";
-      const isStrong = s === "strong";
-      return `<button class="hand-card ct-${card.card_type}" data-ct="${card.card_type}">
-        <div class="hand-card-inner">
-          <span class="card-num">${card.card_type}</span>
-          <span class="card-name">${LOCATION_NAMES[card.card_type]}</span>
-          <div class="strength-badge-card ${isStrong ? "strength-strong" : "strength-normal"}">${isStrong ? "★ Strong" : "Normal"}</div>
-          <div class="card-ability" style="font-size:.6rem">${isStrong ? CARD_ABILITIES[card.card_type].strong : CARD_ABILITIES[card.card_type].normal}</div>
-          <div class="card-scoring" style="font-size:.6rem">${CARD_SCORING[card.card_type]}</div>
-        </div>
-      </button>`;
-    }).join("")}
-  </div>
-</div>
-<div class="choosing-board">
-  <p class="choosing-label">Your day slots — click an empty slot after selecting a card</p>
-  <div class="choosing-slots">
-    ${(me.cards || []).map((card, di) => {
-      const day = di + 1;
-      if (card !== null && card !== undefined && card.face_up) {
-        const ct = card.card_type;
-        return `<div class="choosing-slot filled ct-${ct}">
-          <span class="slot-day">Day ${day}</span>
-          <span class="slot-ct">${ct}</span>
-          <span class="slot-name">${LOCATION_NAMES[ct]}</span>
-          ${day === ct ? '<span class="match-day-hint" style="font-size:.55rem">Match!</span>' : ""}
-        </div>`;
-      }
-      return `<button class="choosing-slot empty" data-day="${day}">
-        <span class="slot-day">Day ${day}</span>
-        <span class="slot-empty">empty</span>
-        <span style="font-size:.55rem;color:#5a3a8a">(match type ${day})</span>
-      </button>`;
-    }).join("")}
-  </div>
-</div>`;
-  }
+  const statusMsg = iHaveChosen
+    ? `Waiting for others… (${submitted}/${total} ready)`
+    : `Select a card below, then click an empty Day slot in your row.`;
 
-  // Other players' boards
-  const othersArea = state.players.filter((p, pi) => pi !== MY_IDX).map(p => `
-<div class="other-player-board">
-  <div class="other-player-name">${p.name} <span style="font-size:.7rem;color:#8870aa">(${p.hand_cards_count || 0} cards in hand)</span></div>
-  <div class="other-slots">
-    ${(p.cards || []).map((card, di) => {
-      const day = di + 1;
-      if (card !== null && card !== undefined && card.face_up) {
-        return `<div class="mini-card ct-${card.card_type}">
-          <span>${card.card_type}</span><br>
-          <span style="font-size:.55rem">${LOCATION_NAMES[card.card_type]}</span>
-        </div>`;
-      }
-      return `<div class="mini-card empty-slot"><span style="color:#3a2060">Day ${day}</span></div>`;
-    }).join("")}
-  </div>
-</div>`).join("");
-
-  const scores = state.scores || {};
+  const handHTML = hand.length === 0
+    ? `<div style="color:#8870aa;font-style:italic;padding:12px">No cards left in hand…</div>`
+    : hand.map(c => {
+        const ct = c.card_type, s = c.strength || "normal", isStrong = s === "strong";
+        return `<button class="hand-card ct-${ct}" data-ct="${ct}" ${iHaveChosen ? "disabled" : ""}>
+          <div class="hand-card-inner">
+            <span class="card-num">${ct}</span>
+            <span class="card-name">${LOCATION_NAMES[ct]}</span>
+            <div class="strength-badge-card ${isStrong ? "strength-strong" : "strength-normal"}">${isStrong ? "★ Strong" : "Normal"}</div>
+            <div class="card-ability" style="font-size:.6rem">${CARD_ABILITIES[ct] ? (isStrong ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal) : ""}</div>
+            <div class="card-scoring" style="font-size:.6rem">${CARD_SCORING[ct]}</div>
+          </div>
+        </button>`;
+      }).join("");
 
   return `
 <div class="screen choosing-screen">
   <div class="topbar">
     <span class="topbar-title">Don't Be the Third Wheel!</span>
-    <span class="topbar-turn">Round ${round} — ${iChose ? `Waiting (${submitted}/${total})` : "Choose Your Card!"}</span>
-    <div class="topbar-btns"><button class="topbar-theme-btn" onclick="toggleTheme()"></button></div>
+    <span class="topbar-turn">Round ${round} — ${iHaveChosen ? `Waiting (${submitted}/${total})` : "Choose Your Card!"}</span>
+    <div class="topbar-btns">
+      <button class="topbar-theme-btn" id="btn-theme" onclick="toggleTheme()"></button>
+      <button class="btn btn-green" id="btn-scores-ch">Scores</button>
+    </div>
   </div>
-  <div class="choosing-main">
-    <div class="choosing-left">${myArea}</div>
-    <div class="choosing-right">${othersArea}</div>
+
+  <div class="action-strip">
+    <span class="action-msg ${iHaveChosen ? "waiting" : ""}" id="action-msg">${statusMsg}</span>
+    ${banked ? `<span class="banked-pill">💰 Banked: ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""}</span>` : ""}
   </div>
+
+  <div class="board-container">
+    <div class="board">
+      <div class="board-corner"></div>
+      ${[1,2,3,4,5,6].map(d => {
+        const hasLock = locks.some(l => l[1] === d - 1);
+        return `<div class="board-day-header ${hasLock ? "day-has-lock" : ""}">Day ${d}${hasLock ? " 🔒" : ""}</div>`;
+      }).join("")}
+      ${state.players.map((player, pi) => boardRowHTML(state, pi, player)).join("")}
+    </div>
+  </div>
+
+  <div class="hand-row">
+    <div class="hand-row-label">${iHaveChosen ? "Waiting for others…" : "Your Hand — pick a card, then click an empty slot above ↑"}</div>
+    <div class="hand-row-cards" id="hand-row-cards">${handHTML}</div>
+  </div>
+
   <div class="score-strip">
-    ${state.players.map(p => `<span class="score-item"><strong>${p.name}</strong>: ${scores[p.name] !== undefined ? ((scores[p.name] >= 0 ? "+" : "") + scores[p.name]) : 0} pts</span>`).join("")}
+    ${state.players.map(p =>
+      `<span class="score-item"><strong>${p.name}</strong>: ${scores[p.name] !== undefined ? (scores[p.name] >= 0 ? "+" : "") + scores[p.name] : 0} pts</span>`
+    ).join("")}
   </div>
   <div class="move-log-panel">
     <div class="move-log-title">Move Log</div>
     <div class="move-log-list">
-      ${(state.move_log || []).map(e => `<div class="log-entry${e.startsWith("↳") ? " log-ability" : ""}">${e}</div>`).join("") || '<div class="log-entry log-empty">No moves yet.</div>'}
+      ${(state.move_log || []).length === 0
+        ? '<div class="log-entry log-empty">No moves yet.</div>'
+        : (state.move_log || []).map(e => `<div class="log-entry${e.startsWith("↳") ? " log-ability" : ""}">${e}</div>`).join("")}
     </div>
   </div>
 </div>`;
@@ -752,6 +728,7 @@ function choosingHTML(state) {
 
 function bindChoosing(state) {
   applyTheme(currentTheme());
+  document.getElementById("btn-scores-ch")?.addEventListener("click", () => showScoresModal(G));
   if (state.i_have_chosen) return;
 
   let selectedCt = null;
@@ -761,23 +738,18 @@ function bindChoosing(state) {
       selectedCt = parseInt(btn.dataset.ct);
       document.querySelectorAll(".hand-card").forEach(b => b.classList.remove("selected"));
       btn.classList.add("selected");
-      // Update slot labels to highlight matching day
-      document.querySelectorAll(".choosing-slot.empty").forEach(slot => {
-        const day = parseInt(slot.dataset.day);
-        const emptySpan = slot.querySelector(".slot-empty");
-        if (emptySpan) {
-          emptySpan.textContent = day === selectedCt ? "match!" : "empty";
-        }
-      });
+      document.querySelectorAll(".card.empty-slot.target-slot").forEach(s => s.classList.add("ready"));
+      showMsg(`${LOCATION_NAMES[selectedCt]} selected — click an empty Day slot in your row above.`);
     });
   });
 
-  document.querySelectorAll(".choosing-slot.empty").forEach(slot => {
+  document.querySelectorAll(".card.empty-slot.target-slot").forEach(slot => {
     slot.addEventListener("click", async () => {
-      if (!selectedCt) { return; }
+      if (!selectedCt) { showMsg("Pick a card from your hand first.", "error"); return; }
       const day = parseInt(slot.dataset.day);
-      G = await apiPost(gameUrl("choose_play"), { card_type: selectedCt, day });
-      render(G);
+      const resp = await apiPost(gameUrl("choose_play"), { card_type: selectedCt, day });
+      if (resp.error) { showMsg(resp.error, "error"); return; }
+      G = resp; render(G);
     });
   });
 }
@@ -982,10 +954,7 @@ function boardRowHTML(state, pi, player) {
     <div class="board-player-label ${labelCls}">
       ${isActive ? "▶ " : ""}${player.name}${isMe ? " (you)" : ""}${aiTag}
     </div>
-    ${player.cards.map((card, di) => card === null || card === undefined
-      ? `<div class="card face-down other dimmed" style="min-height:130px;opacity:.15;cursor:default"><span class="mystery-symbol" style="font-size:.7rem;color:#3a2060">Day ${di+1}</span></div>`
-      : cardHTML(state, pi, di + 1, card)
-    ).join("")}`;
+    ${player.cards.map((card, di) => cardHTML(state, pi, di + 1, card)).join("")}`;
 }
 
 function cardHTML(state, pi, day, card) {

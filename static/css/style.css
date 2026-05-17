@@ -923,3 +923,15 @@ body {
 .mini-card.ct-4 { background: #bef264; color: #0a0a18; }
 .mini-card.ct-5 { background: #fde68a; color: #0a0a18; }
 .mini-card.ct-6 { background: #c4b5fd; color: #0a0a18; }
+
+/* ── choosing screen board+hand layout ────────────────────────────────────── */
+.hand-row { padding: 12px 16px; border-top: 1px solid var(--border); }
+.hand-row-label { font-size: .75rem; color: var(--text-muted); margin-bottom: 8px; font-weight: 600; }
+.hand-row-cards { display: flex; flex-wrap: wrap; gap: 8px; }
+.card.empty-slot { cursor: default; }
+.card.empty-slot.target-slot { cursor: pointer; border-style: dashed; border-color: var(--border); }
+.card.empty-slot.target-slot:hover, .card.empty-slot.target-slot.ready { border-color: var(--accent-hi); background: var(--surface-2); }
+
+/* ── peek player picker ───────────────────────────────────────────────────── */
+.peek-picker { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 16px; background:rgba(147,197,253,.08); border-bottom:1px solid #1a0a35; }
+.peek-picker-label { font-size:.78rem; color:#93c5fd; font-weight:600; }
