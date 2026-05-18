@@ -69,7 +69,7 @@ CARD_PTS = {
     1: (1, 2, -1),   # Coffee Shop  — late arrival best
     2: (1, 2, -1),   # Park         — late arrival best
     3: (3, 1, -2),   # Cinema       — strong first-arrival bonus
-    4: (-1, 1, 3),   # Restaurant   — arrive LAST for best score; tension with early peek
+    4: (-1, 1, 3),   # Restaurant   — arrive LAST for best score; swap own cards to optimize placement
     5: (5, 3, -4),   # Beach        — being third wheel is devastating
     6: (3, 1,  0),   # Museum       — early arrival rewarded
 }
@@ -417,8 +417,6 @@ def _new_state(player_names):
         "draft_pick_idx": 0,
         "locks": [],
         "pocketed_abilities": [None] * n,  # one slot per player; None or {card_type, strength}
-        "peeked_cards": {},                 # {str(pidx): [[opp_pidx, day], ...]}
-        "peeked_players": {},               # {str(pidx): [opp_pidx, ...]} (hand-mode peek)
     }
 
 def _assign_normal_cards(state):
@@ -496,10 +494,11 @@ def _setup_ability_for_player(state, pidx, ct, strength):
             would_be_action, would_be_msg = "adj_swap_other", "Swap Others (normal): Click an opponent's card to shift to an adjacent day."
         would_be_ctx = {"actor": pidx, "strength": strength}
     elif ct == 4:
-        count = 2 if strength == "strong" else 1
-        would_be_action = "peek_pick_1"
-        would_be_msg = f"Peek: Click an opponent's face-down card."
-        would_be_ctx = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
+        if strength == "strong":
+            would_be_action, would_be_msg = "swap_own_1", "Restaurant Swap Own (strong): Click one of your cards — first of two to swap."
+        else:
+            would_be_action, would_be_msg = "adj_swap_own", "Restaurant Shift Own (normal): Click one of your cards to shift to an adjacent day."
+        would_be_ctx = {"actor": pidx, "strength": strength}
     elif ct == 5:
         # Bank: set up bank_decision directly (no pocket_choice for bank)
         state["pending_action"] = "bank_decision"
@@ -730,11 +729,9 @@ def _state_for_player(game, my_pidx):
             if i == my_pidx:
                 p["draft_cards"] = player.get("draft_cards", [])
 
-        # hand_cards: expose own hand fully; also expose peeked opponents' hands
-        peeked_opps = state.get("peeked_players", {}).get(str(my_pidx), [])
-        p["hand_cards"] = player.get("hand_cards", []) if (i == my_pidx or i in peeked_opps) else []
+        # hand_cards: expose own hand fully only
+        p["hand_cards"] = player.get("hand_cards", []) if i == my_pidx else []
         p["hand_cards_count"] = len(player.get("hand_cards", []))
-        p["peeked_hand"] = (i in peeked_opps)
 
         if state["phase"] == "arrangement":
             # Show own cards with strength, hide opponents
@@ -755,19 +752,11 @@ def _state_for_player(game, my_pidx):
                     p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None, "banked": False})
         else:
             # game/end phase
-            peeked_by_me = state.get("peeked_cards", {}).get(str(my_pidx), [])
             for d_idx, c in enumerate(player["cards"]):
                 if c is None:
                     p["cards"].append(None)
                 elif i == my_pidx or c["face_up"]:
-                    card_copy = dict(c)
-                    # Include strength and banked for face-up cards
-                    p["cards"].append(card_copy)
-                elif [i, d_idx + 1] in peeked_by_me:
-                    p["cards"].append({
-                        "card_type": c["card_type"], "face_up": False,
-                        "arrival": 0, "strength": None, "banked": False, "peeked": True
-                    })
+                    p["cards"].append(dict(c))
                 else:
                     p["cards"].append({"card_type": None, "face_up": False, "arrival": 0, "strength": None, "banked": False})
 
@@ -792,7 +781,6 @@ def _state_for_player(game, my_pidx):
         "locks": state.get("locks", []),
     }
     out["pocketed_ability"] = state.get("pocketed_abilities", [None] * len(state["players"]))[my_pidx]
-    out["peeked_players"] = state.get("peeked_players", {}).get(str(my_pidx), [])
 
     # Draft phase extras
     if state["phase"] == "draft":
@@ -992,18 +980,17 @@ def _rollout_ability(state, pidx, ct, strength, difficulty="random", current_day
                 if not _is_locked(state, tpi, day) and not _is_locked(state, tpi, tday):
                     _swap_days(state, tpi, day, tday)
 
-    elif ct == 4:  # Peek — record random peek in peeked_cards (no state effect for rollouts)
-        opponents = [pi for pi in range(len(state["players"])) if pi != pidx]
-        peeked = state["peeked_cards"].setdefault(str(pidx), [])
-        count = 2 if strength == "strong" else 1
-        for _ in range(count):
-            targets = [
-                [opi, d + 1] for opi in opponents
-                for d, c in enumerate(state["players"][opi]["cards"])
-                if c is not None and not c["face_up"] and [opi, d + 1] not in peeked
-            ]
-            if targets:
-                peeked.append(random.choice(targets))
+    elif ct == 4:  # Swap own (same as type 2)
+        if strength == "strong":
+            d1, d2 = random.sample(range(1, 7), 2)
+            if not _is_locked(state, pidx, d1) and not _is_locked(state, pidx, d2):
+                _swap_days(state, pidx, d1, d2)
+        else:
+            day = random.choice(list(range(1, 7)))
+            adj = [(day - 2) % 6 + 1, day % 6 + 1]
+            tday = random.choice(adj)
+            if not _is_locked(state, pidx, day) and not _is_locked(state, pidx, tday):
+                _swap_days(state, pidx, day, tday)
 
     elif ct == 5:  # Bank points (AI auto-decide)
         player_cards = state["players"][pidx]["cards"]
@@ -1590,25 +1577,25 @@ def _ai_take_turn(game):
                 _swap_days(state, tpi, day_s, tday_s)
                 _log(state, f"↳ {pname} used Swap Others (normal): shifted {state['players'][tpi]['name']}'s Day {day_s} → Day {tday_s}")
 
-    elif ct == 4:  # Peek at opponent face-down cards
-        opponents = [pi for pi in range(len(state["players"])) if pi != pidx]
-        peeked = state["peeked_cards"].setdefault(str(pidx), [])
-        count = 2 if strength == "strong" else 1
-        peeked_names = []
-        for _ in range(count):
-            targets = [
-                [opi, d + 1] for opi in opponents
-                for d, c in enumerate(state["players"][opi]["cards"])
-                if not c["face_up"] and [opi, d + 1] not in peeked
-            ]
-            if targets:
-                target = random.choice(targets)
-                peeked.append(target)
-                peeked_names.append(f"{state['players'][target[0]]['name']}'s Day {target[1]}")
-        if peeked_names:
-            _log(state, f"↳ {pname} used Peek: peeked at {', '.join(peeked_names)}")
+    elif ct == 4:  # Swap own (same mechanic as type 2)
+        if strength == "strong":
+            if is_mcts:
+                best_pair = _mcts_best_swap_own_strong(state, pidx, max(rollouts // 3, 20))
+                if best_pair:
+                    d1, d2 = best_pair
+                    _swap_days(state, pidx, d1, d2)
+                    _log(state, f"↳ {pname} used Restaurant Swap Own (strong): swapped Day {d1} ↔ Day {d2}")
+            else:
+                unlocked = [d + 1 for d in range(6) if not _is_locked(state, pidx, d + 1)]
+                if len(unlocked) >= 2:
+                    d1, d2 = random.sample(unlocked, 2)
+                    _swap_days(state, pidx, d1, d2)
+                    _log(state, f"↳ {pname} used Restaurant Swap Own (strong): swapped Day {d1} ↔ Day {d2}")
         else:
-            _log(state, f"↳ {pname} used Peek: no face-down cards to peek at")
+            day_s, tday_s = _ai_swap_own_adj_target(state, pidx, difficulty)
+            if day_s is not None:
+                _swap_days(state, pidx, day_s, tday_s)
+                _log(state, f"↳ {pname} used Restaurant Shift Own (normal): shifted Day {day_s} → Day {tday_s}")
 
     elif ct == 5:  # Bank points — AI auto-decide
         bank_pts = 2 if strength == "strong" else 1
@@ -1936,11 +1923,15 @@ def api_flip(game_id, token):
             would_be_msg = "Swap Others (normal): Click an opponent's card to shift it to an adjacent day."
             would_be_ctx = {"actor": pidx, "strength": "normal"}
 
-    elif ct == 4:  # Peek
-        count = 2 if strength == "strong" else 1
-        would_be_action = "peek_pick_1"
-        would_be_msg = f"Peek ({'strong: pick 2 cards' if strength == 'strong' else 'normal: pick 1 card'}): Click an opponent's face-down card."
-        would_be_ctx = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
+    elif ct == 4:  # Swap own
+        if strength == "strong":
+            would_be_action = "swap_own_1"
+            would_be_msg = "Restaurant Swap Own (strong): Click one of your cards — first of two to swap."
+            would_be_ctx = {"actor": pidx, "strength": "strong"}
+        else:
+            would_be_action = "adj_swap_own"
+            would_be_msg = "Restaurant Shift Own (normal): Click one of your cards to shift to an adjacent day."
+            would_be_ctx = {"actor": pidx, "strength": "normal"}
 
     elif ct == 5:  # Bank points — immediate decision, no pocketing
         state["action_ctx"] = {"actor": pidx, "bank_day": day, "strength": strength}
@@ -2100,10 +2091,13 @@ def api_use_pocket(game_id, token):
             msg = "Pocketed Swap Others (normal): Click an opponent's card to shift to an adjacent day."
         state["action_ctx"] = {"actor": pidx, "strength": strength}
     elif ct == 4:
-        count = 2 if strength == "strong" else 1
-        pending = "peek_pick_1"
-        msg = f"Pocketed Peek ({'2 cards' if strength == 'strong' else '1 card'}): Click an opponent's face-down card."
-        state["action_ctx"] = {"actor": pidx, "strength": strength, "peek_count": count, "peek_remaining": count}
+        if strength == "strong":
+            pending = "swap_own_1"
+            msg = "Pocketed Restaurant Swap Own (strong): Click one of your cards — first of two to swap."
+        else:
+            pending = "adj_swap_own"
+            msg = "Pocketed Restaurant Shift Own (normal): Click one of your cards to shift to an adjacent day."
+        state["action_ctx"] = {"actor": pidx, "strength": strength}
     elif ct == 6:
         if strength == "strong":
             pending = "flip_own_down"
@@ -2358,10 +2352,11 @@ def api_action(game_id, token):
                         pending_b, msg_b = "adj_swap_other", "Banked Swap Others (normal): Click an opponent's card to shift to an adjacent day."
                     ctx_b = {"actor": pidx, "strength": bstrength}
                 elif bct == 4:
-                    count = 2 if bstrength == "strong" else 1
-                    pending_b = "peek_pick_1"
-                    msg_b = f"Banked Peek: Click an opponent's face-down card."
-                    ctx_b = {"actor": pidx, "strength": bstrength, "peek_count": count, "peek_remaining": count}
+                    if bstrength == "strong":
+                        pending_b, msg_b = "swap_own_1", "Banked Restaurant Swap Own (strong): Click one of your cards — first of two to swap."
+                    else:
+                        pending_b, msg_b = "adj_swap_own", "Banked Restaurant Shift Own (normal): Click one of your cards to shift to an adjacent day."
+                    ctx_b = {"actor": pidx, "strength": bstrength}
                 elif bct == 6:
                     if bstrength == "strong":
                         pending_b, msg_b = "flip_own_down", "Banked Return to Hand (strong): Click one of YOUR face-up cards."
@@ -2387,49 +2382,7 @@ def api_action(game_id, token):
             _log(state, f"{state['players'][pidx]['name']} skipped {LOCATION_NAMES[ctx['pocket_ct']]} ability")
             done = True
 
-    # ── Peek (type 4) ─────────────────────────────────────────────────────────
-    elif action in ("peek_pick_1", "peek_pick_2"):
-        if tpi == actor:
-            err = "Must target an opponent."
-        elif tday == -1:
-            # Play-from-hand mode: peek at a player's full hand
-            peeked_players = state.setdefault("peeked_players", {}).setdefault(str(actor), [])
-            if tpi in peeked_players:
-                err = "Already peeked that player's hand."
-            else:
-                peeked_players.append(tpi)
-                _log(state, f"↳ {state['players'][actor]['name']} peeked at {state['players'][tpi]['name']}'s hand")
-                peek_remaining = ctx.get("peek_remaining", 1) - 1
-                ctx["peek_remaining"] = peek_remaining
-                if peek_remaining > 0:
-                    state["pending_action"] = "peek_pick_2"
-                    state["action_message"] = "Peeked! Now pick another opponent's hand."
-                    success_msg = f"Peeked at {state['players'][tpi]['name']}'s hand!"
-                else:
-                    success_msg = f"Peeked at {state['players'][tpi]['name']}'s hand!"
-                    done = True
-        else:
-            # Original face-down board card peek
-            opp_card = _card_at(state["players"][tpi], tday)
-            if not opp_card or opp_card.get("face_up"):
-                err = "Must target a face-down card."
-            else:
-                peeked = state["peeked_cards"].setdefault(str(actor), [])
-                pair = [tpi, tday]
-                if pair in peeked:
-                    err = "You already know that card."
-                else:
-                    peeked.append(pair)
-                    _log(state, f"↳ {state['players'][actor]['name']} peeked at {state['players'][tpi]['name']}'s Day {tday}")
-                    peek_remaining = ctx.get("peek_remaining", 1) - 1
-                    ctx["peek_remaining"] = peek_remaining
-                    if peek_remaining > 0:
-                        state["pending_action"] = "peek_pick_2"
-                        state["action_message"] = "Peeked! Now pick a second face-down card."
-                        success_msg = f"Peeked at Day {tday}! Pick one more."
-                    else:
-                        success_msg = f"Peeked at {state['players'][tpi]['name']}'s Day {tday}!"
-                        done = True
+
 
     # ── Return to hand (type 6) ───────────────────────────────────────────────
     elif action == "flip_other_down":

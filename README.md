@@ -49,8 +49,8 @@ Arrival scoring applies only when 2 or more players arrive at the same location 
 - **Scoring:** 1st +3 · 2nd +1 · 3rd −2
 
 ### 4 — Restaurant *(arrive LAST for best score!)*
-- **Strong:** Peek at 2 opponents' face-down cards (private information — only you see it)
-- **Normal:** Peek at 1 opponent's face-down card
+- **Strong:** Swap any two of your own cards (day slots)
+- **Normal:** Shift one of your own cards to an adjacent day (wraps)
 - **Scoring:** 1st −1 · 2nd +1 · 3rd +3
 
 ### 5 — Beach

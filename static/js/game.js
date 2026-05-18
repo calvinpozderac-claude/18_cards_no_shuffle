@@ -822,8 +822,6 @@ function gameHTML(state) {
 
   ${buildPocketChoiceModal(state)}
 
-  ${buildPeekPicker(state)}
-
   ${buildLockDayPicker(state)}
 
   <div class="board-container">
@@ -925,23 +923,6 @@ function buildPocketChoiceModal(state) {
 </div>`;
 }
 
-function buildPeekPicker(state) {
-  if (!state.pending_action || !state.pending_action.startsWith("peek_pick")) return "";
-  if (state.current_player_idx !== MY_IDX) return "";
-  const peekedAlready = state.peeked_players || [];
-  const opponents = state.players
-    .map((p, pi) => ({name: p.name, pi}))
-    .filter(p => p.pi !== MY_IDX);
-  return `
-<div class="peek-picker" id="peek-picker">
-  <span class="peek-picker-label">Peek: select an opponent to reveal their hand cards</span>
-  ${opponents.map(p =>
-    `<button class="btn btn-primary peek-player-btn" data-pi="${p.pi}" ${peekedAlready.includes(p.pi) ? 'disabled' : ''}>
-      👁 ${p.name}${peekedAlready.includes(p.pi) ? ' (peeked)' : ''}
-    </button>`
-  ).join("")}
-</div>`;
-}
 
 function buildLockDayPicker(state) {
   if (!state.pending_action || state.current_player_idx !== MY_IDX) return "";
@@ -1061,10 +1042,6 @@ function cardHTML(state, pi, day, card) {
       else valid = day === lockDay && !isLocked;
     }
 
-    if (action === "peek_pick_1" || action === "peek_pick_2") {
-      valid = false;  // peek now uses buildPeekPicker, not card clicks
-    }
-
     if (action === "set_arrival") valid = false;
 
     if (!stateCls) stateCls = valid ? "target-valid" : "dimmed";
@@ -1073,19 +1050,8 @@ function cardHTML(state, pi, day, card) {
   // Lock indicator
   const lockBadge = isLocked ? '<span class="lock-badge">🔒</span>' : "";
 
-  // Opponent face-down: mystery card (or peeked)
+  // Opponent face-down: mystery card
   if (!card.face_up && !isMe) {
-    if (card.peeked && card.card_type) {
-      return `
-<button class="card face-down other peeked ${stateCls}"
-        data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
-  ${lockBadge}
-  <span class="peek-eye">👁</span>
-  <span class="card-num" style="opacity:.7">${card.card_type}</span>
-  <span class="card-name" style="font-size:.6rem;opacity:.7">${LOCATION_NAMES[card.card_type]}</span>
-  <span class="mystery-label" style="font-size:.55rem;color:#FFD700">peeked</span>
-</button>`;
-    }
     return `
 <button class="card face-down other ${stateCls}"
         data-pi="${pi}" data-day="${day}" ${stateCls === "dimmed" ? "disabled" : ""}>
@@ -1199,18 +1165,6 @@ function bindGame(state, prevSnap = null) {
       G = resp; render(G);
     });
   }
-
-  // Peek player buttons
-  document.querySelectorAll(".peek-player-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const tpi = parseInt(btn.dataset.pi);
-      const resp = await apiPost(gameUrl("action"), { player_idx: tpi, day: -1 });
-      const result = resp.action_result || {};
-      if (result.error) { showMsg(result.error, "error"); return; }
-      G = resp; render(G);
-      if (result.message) showMsg(result.message, "success");
-    });
-  });
 
   // Use pocketed ability button
   document.getElementById("btn-use-pocket")?.addEventListener("click", async () => {
