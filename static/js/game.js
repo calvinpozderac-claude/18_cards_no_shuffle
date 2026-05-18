@@ -708,6 +708,12 @@ function choosingHTML(state) {
   <div class="hand-row">
     <div class="hand-row-label">${iHaveChosen ? "Waiting for others…" : "Your Hand — pick a card, then click an empty slot above ↑"}</div>
     <div class="hand-row-cards" id="hand-row-cards">${handHTML}</div>
+    ${banked && !iHaveChosen ? `
+    <div class="pocket-use-row" style="padding:8px 12px;border-top:1px solid #2a1a4a">
+      <button class="btn btn-pocket" id="btn-use-pocket-choosing">
+        💰 Use pocketed ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""} instead of playing a card
+      </button>
+    </div>` : ""}
   </div>
 
   <div class="score-strip">
@@ -730,6 +736,13 @@ function bindChoosing(state) {
   applyTheme(currentTheme());
   document.getElementById("btn-scores-ch")?.addEventListener("click", () => showScoresModal(G));
   if (state.i_have_chosen) return;
+
+  document.getElementById("btn-use-pocket-choosing")?.addEventListener("click", async () => {
+    const resp = await apiPost(gameUrl("choose_pocket"));
+    if (resp.error) { showMsg(resp.error, "error"); return; }
+    G = resp; render(G);
+    if (G.action_message) showMsg(G.action_message);
+  });
 
   let selectedCt = null;
 
