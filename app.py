@@ -84,15 +84,16 @@ def _card_at(player, day):
     return player["cards"][day - 1] if 1 <= day <= 6 else None
 
 def _key(day, ct):
-    return str(ct)
+    return f"{ct}_{day}"
 
-def _renumber(state, ct):
-    """Update arrival positions for all players in the global type-ct queue."""
-    for i, pidx in enumerate(state["arrivals"].get(str(ct), [])):
-        for c in state["players"][pidx]["cards"]:
-            if c and c.get("card_type") == ct:
-                c["arrival"] = i + 1
-                break
+def _renumber(state, key):
+    """Update arrival positions for players in the queue at key (format: 'ct_day')."""
+    parts = str(key).split("_")
+    ct, day = int(parts[0]), int(parts[1])
+    for i, pidx in enumerate(state["arrivals"].get(key, [])):
+        card = _card_at(state["players"][pidx], day)
+        if card and card.get("card_type") == ct:
+            card["arrival"] = i + 1
 
 def _is_locked(state, pidx, day):
     """Check if [pidx, day-1] is in state['locks'] (day is 1-based)."""
@@ -115,15 +116,15 @@ def _flip_down(state, pidx, day):
     if _is_locked(state, pidx, day):
         return False
     ct = card["card_type"]
-    k = str(ct)
+    k = _key(day, ct)
     arr = state["arrivals"].get(k, [])
     if pidx in arr:
         arr.remove(pidx)
         state["arrivals"][k] = arr
-        _renumber(state, ct)
+        _renumber(state, k)
     card["face_up"] = False
     card["arrival"] = 0
-    card["banked"] = False  # unbank when flipped down
+    card["banked"] = False
     return True
 
 def _return_to_hand(state, pidx, day):
@@ -136,12 +137,12 @@ def _return_to_hand(state, pidx, day):
         return False
     ct = card["card_type"]
     strength = card.get("strength", "normal")
-    k = str(ct)
+    k = _key(day, ct)
     arr = state["arrivals"].get(k, [])
     if pidx in arr:
         arr.remove(pidx)
         state["arrivals"][k] = arr
-        _renumber(state, ct)
+        _renumber(state, k)
     player["cards"][day - 1] = None
     player.setdefault("hand_cards", []).append({"card_type": ct, "strength": strength})
     return True
@@ -153,11 +154,36 @@ def _swap_days(state, pidx, day1, day2):
     c1, c2 = _card_at(player, day1), _card_at(player, day2)
     if not c1 or not c2 or day1 == day2:
         return False
-    # Under global arrival scoring, the queue position is based on WHEN a card was flipped,
-    # not which day slot it occupies. Swapping days only changes day-match potential.
-    player["cards"][day1 - 1], player["cards"][day2 - 1] = (
-        player["cards"][day2 - 1], player["cards"][day1 - 1],
-    )
+    ct1, ct2 = c1["card_type"], c2["card_type"]
+
+    # For face-up cards: remove from current (ct_day) queues before swapping
+    k1_old, k2_old = _key(day1, ct1), _key(day2, ct2)
+    if c1.get("face_up"):
+        arr = state["arrivals"].get(k1_old, [])
+        if pidx in arr:
+            arr.remove(pidx)
+            state["arrivals"][k1_old] = arr
+    if c2.get("face_up"):
+        arr = state["arrivals"].get(k2_old, [])
+        if pidx in arr:
+            arr.remove(pidx)
+            state["arrivals"][k2_old] = arr
+
+    # Swap the cards
+    player["cards"][day1 - 1], player["cards"][day2 - 1] = c2, c1
+
+    # Add to new queues (appended = latest arrival at that slot) and renumber old queues
+    if c1.get("face_up"):
+        k1_new = _key(day2, ct1)
+        state["arrivals"].setdefault(k1_new, []).append(pidx)
+        c1["arrival"] = len(state["arrivals"][k1_new])
+        _renumber(state, k1_old)
+    if c2.get("face_up"):
+        k2_new = _key(day1, ct2)
+        state["arrivals"].setdefault(k2_new, []).append(pidx)
+        c2["arrival"] = len(state["arrivals"][k2_new])
+        _renumber(state, k2_old)
+
     return True
 
 def _change_arrival(state, pidx, day, new_pos):
@@ -165,7 +191,7 @@ def _change_arrival(state, pidx, day, new_pos):
     if not card or not card["face_up"]:
         return False
     ct = card["card_type"]
-    k = str(ct)
+    k = _key(day, ct)
     arr = state["arrivals"].get(k, [])
     if pidx not in arr:
         return False
@@ -173,7 +199,7 @@ def _change_arrival(state, pidx, day, new_pos):
     arr.remove(pidx)
     arr.insert(new_pos - 1, pidx)
     state["arrivals"][k] = arr
-    _renumber(state, ct)
+    _renumber(state, k)
     return True
 
 def _check_game_over(state):
@@ -184,14 +210,19 @@ def _check_game_over(state):
 
 
 def _start_date_resolution(state):
-    queue = [int(k) for k, arr in sorted(state["arrivals"].items(), key=lambda x: int(x[0]))
+    def _dk(k):
+        parts = k.split("_")
+        return (int(parts[0]), int(parts[1]))
+    queue = [k for k, arr in sorted(state["arrivals"].items(), key=lambda x: _dk(x[0]))
              if len(arr) >= 2]
     state["date_queue"] = queue
     state["date_results"] = []
     state["date_resolution_pts"] = {str(i): 0 for i in range(len(state["players"]))}
     if queue:
         state["phase"] = "date_resolution"
-        state["current_date_ct"] = queue[0]
+        ct, day = _dk(queue[0])
+        state["current_date_ct"] = ct
+        state["current_date_day"] = day
         state["date_moves"] = {}
     else:
         state["phase"] = "end"
@@ -199,7 +230,8 @@ def _start_date_resolution(state):
 
 def _resolve_current_date(state):
     ct = state["current_date_ct"]
-    arr = state["arrivals"].get(str(ct), [])
+    day = state["current_date_day"]
+    arr = state["arrivals"].get(_key(day, ct), [])
     moves = state["date_moves"]   # {str(pidx): bool}
     pts = CARD_PTS[ct]
     n = min(len(arr), 3)
@@ -275,13 +307,18 @@ def _resolve_current_date(state):
 
     # Advance
     queue = state["date_queue"]
-    idx = queue.index(ct)
+    cur_key = _key(day, ct)
+    idx = queue.index(cur_key)
     if idx + 1 < len(queue):
-        state["current_date_ct"] = queue[idx + 1]
+        next_key = queue[idx + 1]
+        parts = next_key.split("_")
+        state["current_date_ct"] = int(parts[0])
+        state["current_date_day"] = int(parts[1])
         state["date_moves"] = {}
     else:
         state["phase"] = "end"
         state["current_date_ct"] = None
+        state["current_date_day"] = None
 
 
 def _process_date_ai_moves(game):
@@ -289,9 +326,10 @@ def _process_date_ai_moves(game):
     if state["phase"] != "date_resolution":
         return
     ct = state.get("current_date_ct")
-    if ct is None:
+    day = state.get("current_date_day")
+    if ct is None or day is None:
         return
-    arr = state["arrivals"].get(str(ct), [])
+    arr = state["arrivals"].get(_key(day, ct), [])
     participants = arr[:min(len(arr), 3)]
     ai_set = set(state.get("ai_players", []))
     pts = CARD_PTS[ct]
@@ -341,12 +379,13 @@ def _calculate_scores(state):
         for i, player in enumerate(state["players"]):
             scores[player["name"]] += state["date_resolution_pts"].get(str(i), 0)
     else:
-        # Global arrival scoring: arrivals keyed by str(ct)
+        # Per-(ct, day) arrival scoring: arrivals keyed by "ct_day"
         for k, arr in state["arrivals"].items():
             n = len(arr)
             if n < 2:
                 continue
-            ct = int(k)
+            parts = str(k).split("_")
+            ct = int(parts[0])
             pts = CARD_PTS[ct]
             for i, pidx in enumerate(arr[:3]):
                 if i < len(pts):
@@ -380,10 +419,15 @@ def _calculate_scores(state):
 
 def _arrivals_display(state):
     rows = []
-    for k, arr in sorted(state["arrivals"].items(), key=lambda x: int(x[0])):
-        ct = int(k)
+    def sort_key(k):
+        parts = str(k).split("_")
+        return (int(parts[0]), int(parts[1])) if len(parts) == 2 else (int(k), 0)
+    for k, arr in sorted(state["arrivals"].items(), key=lambda x: sort_key(x[0])):
+        parts = str(k).split("_")
+        ct, day = int(parts[0]), int(parts[1]) if len(parts) == 2 else 0
         rows.append({
             "card_type": ct,
+            "day": day,
             "location": LOCATION_NAMES[ct],
             "players": [state["players"][pi]["name"] for pi in arr],
             "n": len(arr),
@@ -625,11 +669,11 @@ def _ai_choose_play(state, pidx):
 
     for card in hand:
         ct = card["card_type"]
-        n_arr = len(state["arrivals"].get(str(ct), []))
         pts_arr = CARD_PTS[ct]
-        arrival_val = pts_arr[n_arr] if n_arr < len(pts_arr) else pts_arr[-1]
 
         for day in empty_days:
+            n_arr = len(state["arrivals"].get(_key(day, ct), []))
+            arrival_val = pts_arr[n_arr] if n_arr < len(pts_arr) else pts_arr[-1]
             day_match_bonus = 1 if day == ct else 0
             score = arrival_val + day_match_bonus
             if score > best_score:
@@ -800,11 +844,13 @@ def _state_for_player(game, my_pidx):
     if state["phase"] in ("date_resolution", "end"):
         out["date_queue"] = state.get("date_queue", [])
         out["current_date_ct"] = state.get("current_date_ct")
+        out["current_date_day"] = state.get("current_date_day")
         out["date_results"] = state.get("date_results", [])
         out["date_resolution_pts"] = state.get("date_resolution_pts", {})
         ct = state.get("current_date_ct")
-        if ct is not None:
-            arr = state["arrivals"].get(str(ct), [])
+        day = state.get("current_date_day")
+        if ct is not None and day is not None:
+            arr = state["arrivals"].get(_key(day, ct), [])
             participants = arr[:min(len(arr), 3)]
             out["my_date_move"] = state.get("date_moves", {}).get(str(my_pidx))
             out["i_am_in_date"] = my_pidx in participants
@@ -1981,10 +2027,11 @@ def api_make_move(game_id, token):
         return jsonify({"error": "Not in date resolution phase"}), 400
 
     ct = state.get("current_date_ct")
-    if ct is None:
+    day = state.get("current_date_day")
+    if ct is None or day is None:
         return jsonify({"error": "No active date"}), 400
 
-    arr = state["arrivals"].get(str(ct), [])
+    arr = state["arrivals"].get(_key(day, ct), [])
     participants = arr[:min(len(arr), 3)]
 
     if pidx not in participants:

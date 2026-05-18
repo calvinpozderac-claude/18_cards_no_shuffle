@@ -1296,8 +1296,9 @@ function closeModal() {
 /* ══ DATE RESOLUTION SCREEN ══════════════════════════════════════════════════ */
 function dateResolutionHTML(state) {
   const ct = state.current_date_ct;
+  const day = state.current_date_day;
   const arrivals = state.arrivals || {};
-  const arr = ct ? (arrivals[String(ct)] || []) : [];
+  const arr = (ct && day) ? (arrivals[`${ct}_${day}`] || []) : [];
   const participants = arr.slice(0, 3);
   const iAmIn = state.i_am_in_date;
   const myMove = state.my_date_move;
@@ -1347,7 +1348,7 @@ function dateResolutionHTML(state) {
   <div class="date-location-header" style="background:${LOC_COLORS[ct]}18;border-color:${LOC_COLORS[ct]}">
     <span class="date-loc-num" style="color:${LOC_COLORS[ct]};font-size:1.4rem;font-weight:900">${ct}</span>
     <span class="date-loc-name">${LOCATION_NAMES[ct]}</span>
-    <span class="date-loc-queue" style="font-size:.75rem;color:#8870aa">Date ${queue.indexOf(ct)+1} of ${queue.length}</span>
+    <span class="date-loc-queue" style="font-size:.75rem;color:#8870aa">Date ${queue.indexOf(`${ct}_${day}`)+1} of ${queue.length}</span>
   </div>
   <div class="date-stakes">${stakeRows}</div>
   ${decisionArea}
