@@ -761,18 +761,47 @@ function gameHTML(state) {
   const scores = state.scores || {};
   const turnPlayerName = state.players[cur].name;
   const locks = state.locks || [];
+  const banked = state.pocketed_ability;
+  const me = state.players[MY_IDX];
+  const hand = me.hand_cards || [];
 
   // Build bank decision modal if pending
   const bankModal = (state.pending_action === "bank_decision" && isMyTurn)
     ? buildBankModal(state) : "";
 
+  // Determine status message for the action strip
+  let actionMsg;
+  if (state.pending_action && isMyTurn) {
+    actionMsg = state.action_message || "";
+  } else if (isMyTurn) {
+    actionMsg = "Resolving abilities — your opponents are taking their turns…";
+  } else {
+    actionMsg = `Waiting for <strong>${turnPlayerName}</strong> to resolve their ability…`;
+  }
+
+  // Hand row: show hand cards (greyed out — can't play during ability resolution)
+  const handHTML = hand.length === 0
+    ? `<div style="color:#8870aa;font-style:italic;padding:12px">No cards left in hand</div>`
+    : hand.map(c => {
+        const ct = c.card_type, s = c.strength || "normal", isStrong = s === "strong";
+        return `<button class="hand-card ct-${ct}" data-ct="${ct}" disabled style="opacity:0.45;cursor:default">
+          <div class="hand-card-inner">
+            <span class="card-num">${ct}</span>
+            <span class="card-name">${LOCATION_NAMES[ct]}</span>
+            <div class="strength-badge-card ${isStrong ? "strength-strong" : "strength-normal"}">${isStrong ? "★ Strong" : "Normal"}</div>
+            <div class="card-ability" style="font-size:.6rem">${CARD_ABILITIES[ct] ? (isStrong ? CARD_ABILITIES[ct].strong : CARD_ABILITIES[ct].normal) : ""}</div>
+            <div class="card-scoring" style="font-size:.6rem">${CARD_SCORING[ct]}</div>
+          </div>
+        </button>`;
+      }).join("");
+
   return `
-<div class="game-wrap">
+<div class="screen choosing-screen">
   <div class="topbar">
     <span class="topbar-title">Don't Be the Third Wheel!</span>
     <span class="topbar-turn">
-      Turn ${state.turn_count + 1} —
-      ${isMyTurn ? "<strong style='color:#FFD700'>Your turn!</strong>" : `<strong>${turnPlayerName}</strong>'s turn`}
+      Round ${state.turn_count} —
+      ${isMyTurn ? "<strong style='color:#FFD700'>Resolve your ability!</strong>" : `<strong>${turnPlayerName}</strong> resolving ability`}
     </span>
     <div class="topbar-btns">
       <button class="topbar-theme-btn" id="btn-theme" onclick="toggleTheme()"></button>
@@ -782,21 +811,11 @@ function gameHTML(state) {
   </div>
 
   <div class="action-strip">
-    <span class="action-msg ${isMyTurn && state.pending_action ? "" : isMyTurn ? "" : "waiting"}" id="action-msg">
-      ${state.pending_action && isMyTurn
-        ? state.action_message || ""
-        : isMyTurn
-          ? "Your turn — click one of your face-down cards to flip it."
-          : `Waiting for ${turnPlayerName} to play…`}
-    </span>
+    <span class="action-msg ${isMyTurn && state.pending_action ? "" : "waiting"}" id="action-msg">${actionMsg}</span>
     ${isMyTurn && state.pending_action && state.pending_action !== "bank_decision" && state.pending_action !== "pocket_choice"
       ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>`
       : ""}
-    ${!state.pending_action && state.pocketed_ability
-      ? `<span class="banked-pill">
-           💰 Banked: ${LOCATION_NAMES[state.pocketed_ability.card_type]}${state.pocketed_ability.strength === 'strong' ? ' ★' : ''}
-         </span>`
-      : ""}
+    ${banked ? `<span class="banked-pill">💰 Banked: ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""}</span>` : ""}
   </div>
 
   ${bankModal}
@@ -816,6 +835,11 @@ function gameHTML(state) {
       }).join("")}
       ${state.players.map((player, pi) => boardRowHTML(state, pi, player)).join("")}
     </div>
+  </div>
+
+  <div class="hand-row">
+    <div class="hand-row-label">Your Hand — abilities resolving, next round starts soon</div>
+    <div class="hand-row-cards">${handHTML}</div>
   </div>
 
   <div class="score-strip">
