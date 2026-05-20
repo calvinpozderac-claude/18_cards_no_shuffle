@@ -148,44 +148,40 @@ def _return_to_hand(state, pidx, day):
     return True
 
 def _swap_days(state, pidx, day1, day2):
+    if day1 == day2:
+        return False
     if _is_locked(state, pidx, day1) or _is_locked(state, pidx, day2):
         return False
     player = state["players"][pidx]
     c1, c2 = _card_at(player, day1), _card_at(player, day2)
-    if not c1 or not c2 or day1 == day2:
+    if c1 is None and c2 is None:
         return False
-    ct1, ct2 = c1["card_type"], c2["card_type"]
+    if (c1 is None and _is_locked(state, pidx, day1)) or (c2 is None and _is_locked(state, pidx, day2)):
+        return False
 
-    # Remove face-up cards from their current arrival queues and renumber
-    k1_old, k2_old = _key(day1, ct1), _key(day2, ct2)
-    if c1.get("face_up"):
-        arr = state["arrivals"].get(k1_old, [])
-        if pidx in arr:
-            arr.remove(pidx)
-            state["arrivals"][k1_old] = arr
-        _renumber(state, k1_old)
-    if c2.get("face_up"):
-        arr = state["arrivals"].get(k2_old, [])
-        if pidx in arr:
-            arr.remove(pidx)
-            state["arrivals"][k2_old] = arr
-        _renumber(state, k2_old)
+    def _dequeue(card, day):
+        if card and card.get("face_up"):
+            k = _key(day, card["card_type"])
+            arr = state["arrivals"].get(k, [])
+            if pidx in arr:
+                arr.remove(pidx)
+                state["arrivals"][k] = arr
+            _renumber(state, k)
 
-    # Swap the cards, then register arrival at their new slots
-    player["cards"][day1 - 1], player["cards"][day2 - 1] = c2, c1
-    # c2 is now on day1, c1 is now on day2
-    k1_new = _key(day1, ct2)
-    k2_new = _key(day2, ct1)
-    if c2.get("face_up"):
-        state["arrivals"].setdefault(k1_new, []).append(pidx)
-        c2["arrival"] = len(state["arrivals"][k1_new])
-    else:
-        c2["arrival"] = 0
-    if c1.get("face_up"):
-        state["arrivals"].setdefault(k2_new, []).append(pidx)
-        c1["arrival"] = len(state["arrivals"][k2_new])
-    else:
-        c1["arrival"] = 0
+    def _enqueue(card, day):
+        if card and card.get("face_up"):
+            k = _key(day, card["card_type"])
+            state["arrivals"].setdefault(k, []).append(pidx)
+            card["arrival"] = len(state["arrivals"][k])
+        elif card:
+            card["arrival"] = 0
+
+    _dequeue(c1, day1)
+    _dequeue(c2, day2)
+    player["cards"][day1 - 1] = c2  # c2 moves to day1
+    player["cards"][day2 - 1] = c1  # c1 moves to day2
+    _enqueue(c2, day1)
+    _enqueue(c1, day2)
     return True
 
 def _change_arrival(state, pidx, day, new_pos):
@@ -602,6 +598,8 @@ def _advance_ability_queue(game):
     state["action_message"] = None
 
     _advance_choosing_turn(state)
+    if state["phase"] == "date_resolution":
+        _process_date_ai_moves(game)
 
 
 def _advance_choosing_turn(state):
@@ -711,6 +709,9 @@ def _process_choosing_ai(game):
 
         if not hand and pocket is None:
             _advance_choosing_turn(state)
+            if state["phase"] == "date_resolution":
+                _process_date_ai_moves(game)
+                break
         elif not hand and pocket is not None:
             state["pocketed_abilities"][pidx] = None
             ct, strength = pocket["card_type"], pocket["strength"]
@@ -740,6 +741,9 @@ def _process_choosing_ai(game):
             else:
                 _advance_choosing_turn(state)
 
+        if state["phase"] == "date_resolution":
+            _process_date_ai_moves(game)
+            break
         if state["phase"] == "game" and state.get("ability_resolution_queue"):
             _process_ai_ability_queue(game)
         turns += 1
@@ -1921,6 +1925,9 @@ def api_choose_pocket(game_id, token):
         return jsonify({"error": "Not in choosing phase"}), 400
     if pidx != state["current_player_idx"]:
         return jsonify({"error": "Not your turn"}), 400
+    hand = state["players"][pidx].get("hand_cards", [])
+    if hand:
+        return jsonify({"error": "Must play a card from your hand first"}), 400
     pockets = state.get("pocketed_abilities", [])
     pocket = pockets[pidx] if pidx < len(pockets) else None
     if pocket is None:
@@ -2079,11 +2086,7 @@ def api_make_move(game_id, token):
     move_word = "made a move" if make_move else "played it safe"
     _log(state, f"{state['players'][pidx]['name']} {move_word} at {LOCATION_NAMES[ct]} (hidden until reveal)")
 
-    all_submitted = all(str(pi) in state["date_moves"] for pi in participants)
-    if all_submitted:
-        _resolve_current_date(state)
-        if state["phase"] == "date_resolution":
-            _process_date_ai_moves(game)
+    _process_date_ai_moves(game)
 
     return jsonify(_state_for_player(game, pidx))
 
@@ -2277,7 +2280,7 @@ def api_action(game_id, token):
             ctx["first_day"] = tday
             state["pending_action"] = "swap_own_2"
             state["action_message"] = (
-                f"Selected your Day {tday}. Now click a second card of yours to complete the swap."
+                f"Selected your Day {tday}. Now click another one of your days (can be empty) to swap."
             )
 
     elif action == "swap_own_2":
@@ -2306,7 +2309,7 @@ def api_action(game_id, token):
             state["pending_action"] = "adj_swap_own_dir"
             adj = [(tday - 2) % 6 + 1, tday % 6 + 1]
             state["action_message"] = (
-                f"Selected Day {tday}. Now click an adjacent day card (Day {adj[0]} or Day {adj[1]}) to swap."
+                f"Selected Day {tday}. Now click an adjacent day (Day {adj[0]} or Day {adj[1]}) — can be empty."
             )
 
     elif action == "adj_swap_own_dir":
@@ -2338,7 +2341,7 @@ def api_action(game_id, token):
             state["pending_action"] = "swap_other_2"
             state["action_message"] = (
                 f"Selected {state['players'][tpi]['name']}'s Day {tday}. "
-                "Now click a second card from the same player."
+                "Now click another of their days (can be empty) to swap."
             )
 
     elif action == "swap_other_2":
@@ -2371,7 +2374,7 @@ def api_action(game_id, token):
             adj = [(tday - 2) % 6 + 1, tday % 6 + 1]
             state["action_message"] = (
                 f"Selected {state['players'][tpi]['name']}'s Day {tday}. "
-                f"Now click their adjacent day card (Day {adj[0]} or Day {adj[1]}) to swap."
+                f"Now click their adjacent day (Day {adj[0]} or Day {adj[1]}) — can be empty."
             )
 
     elif action == "adj_swap_other_dir":

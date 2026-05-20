@@ -707,10 +707,10 @@ function choosingHTML(state) {
   <div class="hand-row">
     <div class="hand-row-label">${isMyTurn ? "Your Hand — pick a card, then click an empty slot above ↑" : `Waiting for ${whoseTurn}…`}</div>
     <div class="hand-row-cards" id="hand-row-cards">${handHTML}</div>
-    ${banked && isMyTurn ? `
+    ${banked && isMyTurn && hand.length === 0 ? `
     <div class="pocket-use-row" style="padding:8px 12px;border-top:1px solid #2a1a4a">
       <button class="btn btn-pocket" id="btn-use-pocket-choosing">
-        💰 Use pocketed ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""} instead of playing a card
+        💰 Use pocketed ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""}
       </button>
     </div>` : ""}
   </div>
@@ -982,6 +982,34 @@ function cardHTML(state, pi, day, card) {
         <span class="card-num" style="opacity:.2">${day}</span>
         <span class="mystery-label">empty</span>
       </button>`;
+    }
+    // In game phase, check if this empty slot is a valid swap/shift target
+    if (state.phase === "game" && state.current_player_idx === MY_IDX && state.pending_action) {
+      const action = state.pending_action;
+      const ctx = state.action_ctx || {};
+      let emptyValid = false;
+      if (action === "adj_swap_own_dir" && pi === MY_IDX) {
+        const src = ctx.adj_day;
+        const adj = [(src - 2) % 6 + 1, src % 6 + 1];
+        emptyValid = adj.includes(day);
+      }
+      if (action === "swap_own_2" && pi === MY_IDX) {
+        emptyValid = day !== ctx.first_day;
+      }
+      if (action === "adj_swap_other_dir" && pi === ctx.adj_pi) {
+        const src = ctx.adj_day;
+        const adj = [(src - 2) % 6 + 1, src % 6 + 1];
+        emptyValid = adj.includes(day);
+      }
+      if (action === "swap_other_2" && pi === ctx.first_pi) {
+        emptyValid = day !== ctx.first_day;
+      }
+      if (emptyValid) {
+        return `<button class="card empty-slot target-valid" data-pi="${pi}" data-day="${day}">
+          <span class="card-num" style="opacity:.2">${day}</span>
+          <span class="mystery-label" style="opacity:.5">empty</span>
+        </button>`;
+      }
     }
     return `<div class="card empty-slot" style="background:rgba(255,255,255,.03);border:1px dashed #2a1a4a" data-pi="${pi}" data-day="${day}">
       <span class="card-num" style="opacity:.12">${day}</span>
