@@ -79,7 +79,7 @@ let lastRenderKey = null;
 let msgTimer = null;
 
 function renderKey(s) {
-  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}|${s.draft_pick_idx||0}|${s.current_date_ct||''}|${(s.date_results||[]).length}|${s.my_date_move}|${s.round_choices_submitted||0}|${s.i_have_chosen}`;
+  return `${s.phase}|${s.turn_count}|${s.pending_action}|${(s.players||[]).map(p=>p.arranged).join(",")}|${(s.move_log||[]).length}|${s.draft_pick_idx||0}|${s.current_date_ct||''}|${(s.date_results||[]).length}|${s.my_date_move}|${s.is_my_turn}|${s.whose_turn_name||''}`;
 }
 
 /* ── room state (persisted across refreshes) ─────────────────────────────── */
@@ -649,9 +649,8 @@ function waitingHTML(state) {
 function choosingHTML(state) {
   const me = state.players[MY_IDX];
   const hand = me.hand_cards || [];
-  const submitted = state.round_choices_submitted || 0;
-  const total = state.round_choices_total || state.players.length;
-  const iHaveChosen = state.i_have_chosen;
+  const isMyTurn = state.is_my_turn;
+  const whoseTurn = state.whose_turn_name || state.players[state.current_player_idx]?.name || "?";
   const banked = state.pocketed_ability;
   const locks = state.locks || [];
   const scores = state.scores || {};
@@ -659,15 +658,15 @@ function choosingHTML(state) {
   const cardsPlaced = (me.cards || []).filter(c => c !== null && c !== undefined).length;
   const round = cardsPlaced + 1;
 
-  const statusMsg = iHaveChosen
-    ? `Waiting for others… (${submitted}/${total} ready)`
-    : `Select a card below, then click an empty Day slot in your row.`;
+  const statusMsg = isMyTurn
+    ? `Your turn — select a card below, then click an empty Day slot in your row.`
+    : `Waiting for ${whoseTurn} to play their card…`;
 
   const handHTML = hand.length === 0
     ? `<div style="color:#8870aa;font-style:italic;padding:12px">No cards left in hand…</div>`
     : hand.map(c => {
         const ct = c.card_type, s = c.strength || "normal", isStrong = s === "strong";
-        return `<button class="hand-card ct-${ct}" data-ct="${ct}" ${iHaveChosen ? "disabled" : ""}>
+        return `<button class="hand-card ct-${ct}" data-ct="${ct}" ${!isMyTurn ? "disabled" : ""}>
           <div class="hand-card-inner">
             <span class="card-num">${ct}</span>
             <span class="card-name">${LOCATION_NAMES[ct]}</span>
@@ -682,7 +681,7 @@ function choosingHTML(state) {
 <div class="screen choosing-screen">
   <div class="topbar">
     <span class="topbar-title">Don't Be the Third Wheel!</span>
-    <span class="topbar-turn">Round ${round} — ${iHaveChosen ? `Waiting (${submitted}/${total})` : "Choose Your Card!"}</span>
+    <span class="topbar-turn">Round ${round} — ${isMyTurn ? "Your Turn!" : `${whoseTurn}'s Turn`}</span>
     <div class="topbar-btns">
       <button class="topbar-theme-btn" id="btn-theme" onclick="toggleTheme()"></button>
       <button class="btn btn-green" id="btn-scores-ch">Scores</button>
@@ -690,7 +689,7 @@ function choosingHTML(state) {
   </div>
 
   <div class="action-strip">
-    <span class="action-msg ${iHaveChosen ? "waiting" : ""}" id="action-msg">${statusMsg}</span>
+    <span class="action-msg ${!isMyTurn ? "waiting" : ""}" id="action-msg">${statusMsg}</span>
     ${banked ? `<span class="banked-pill">💰 Banked: ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""}</span>` : ""}
   </div>
 
@@ -706,9 +705,9 @@ function choosingHTML(state) {
   </div>
 
   <div class="hand-row">
-    <div class="hand-row-label">${iHaveChosen ? "Waiting for others…" : "Your Hand — pick a card, then click an empty slot above ↑"}</div>
+    <div class="hand-row-label">${isMyTurn ? "Your Hand — pick a card, then click an empty slot above ↑" : `Waiting for ${whoseTurn}…`}</div>
     <div class="hand-row-cards" id="hand-row-cards">${handHTML}</div>
-    ${banked && !iHaveChosen ? `
+    ${banked && isMyTurn ? `
     <div class="pocket-use-row" style="padding:8px 12px;border-top:1px solid #2a1a4a">
       <button class="btn btn-pocket" id="btn-use-pocket-choosing">
         💰 Use pocketed ${LOCATION_NAMES[banked.card_type]}${banked.strength === "strong" ? " ★" : ""} instead of playing a card
@@ -735,7 +734,7 @@ function choosingHTML(state) {
 function bindChoosing(state) {
   applyTheme(currentTheme());
   document.getElementById("btn-scores-ch")?.addEventListener("click", () => showScoresModal(G));
-  if (state.i_have_chosen) return;
+  if (!state.is_my_turn) return;
 
   document.getElementById("btn-use-pocket-choosing")?.addEventListener("click", async () => {
     const resp = await apiPost(gameUrl("choose_pocket"));
@@ -978,7 +977,7 @@ function boardRowHTML(state, pi, player) {
 function cardHTML(state, pi, day, card) {
   if (card === null || card === undefined) {
     const isMe = pi === MY_IDX;
-    if (isMe && state.phase === "choosing" && !state.i_have_chosen) {
+    if (isMe && state.phase === "choosing" && state.is_my_turn) {
       return `<button class="card empty-slot target-slot" data-pi="${pi}" data-day="${day}">
         <span class="card-num" style="opacity:.2">${day}</span>
         <span class="mystery-label">empty</span>
