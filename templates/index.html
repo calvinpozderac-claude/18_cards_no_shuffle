@@ -4,16 +4,22 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Don't Be the Third Wheel!</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css" />
+  <script>
+    (function(){var t=localStorage.getItem("dtbtw_theme");if(t==="light")document.documentElement.setAttribute("data-theme","light");})();
+  </script>
 </head>
 <body>
   <div id="app">Loading…</div>
 
-  <!-- Arrival-picker modal -->
+  <!-- Arrival-picker / Scores modal -->
   <div id="modal-overlay" class="hidden">
     <div id="modal">
       <h3 id="modal-title"></h3>
-      <p id="modal-sub"></p>
+      <p  id="modal-sub"></p>
       <div id="modal-options"></div>
       <div class="modal-btns">
         <button id="modal-confirm" class="btn btn-primary">Confirm</button>
@@ -23,18 +29,22 @@
   </div>
 
   <script>
-    /* constants injected once at page-load time so JS never needs its own copy */
-    const LOCATION_NAMES  = {1:"Coffee Shop",2:"Park",3:"Cinema",4:"Restaurant",5:"Beach",6:"Museum"};
-    const CARD_ABILITIES  = {
-      1:"Flip one of another player's face-up cards face down",
-      2:"Flip one of your own face-up cards face down",
-      3:"Swap the day slot of two of another player's cards",
-      4:"Swap the day slot of two of your own cards",
-      5:"Change the arrival order of an opponent's face-up card",
-      6:"Change the arrival order of one of your own face-up cards"
+    /* injected by Flask – null on the setup page */
+    const GAME_ID    = {{ game_id    | tojson }};
+    const TOKEN      = {{ token      | tojson }};
+    const MY_IDX     = {{ player_idx | tojson }};
+    const MY_NAME    = {{ player_name| tojson if player_name is defined else 'null' }};
+
+    const LOCATION_NAMES = {1:"Coffee Shop",2:"Park",3:"Cinema",4:"Restaurant",5:"Beach",6:"Museum"};
+    const CARD_ABILITIES = {
+      1: {strong: "Lock an entire day (all cards immune to abilities)", normal: "Lock 2 cards on a chosen day"},
+      2: {strong: "Swap any two of your own cards", normal: "Shift one of your cards to an adjacent day (wraps)"},
+      3: {strong: "Swap any two cards of one opponent", normal: "Shift one opponent's card to an adjacent day (wraps)"},
+      4: {strong: "Swap any two of your own cards", normal: "Shift one of your own cards to an adjacent day (wraps)"},
+      5: {strong: "Bank +2 pts now (no day-match bonus)", normal: "Bank +1 pt now (no day-match bonus)"},
+      6: {strong: "Return one of your own cards to your hand", normal: "Return an opponent's card to their hand"},
     };
-    const LOC_COLORS = {1:"#FFAAAA",2:"#AAFFCC",3:"#AACCFF",4:"#CCFFAA",5:"#FFEEAA",6:"#DDAAFF"};
-    const LOC_DARK   = {1:"#C06060",2:"#50A878",3:"#5080B0",4:"#70A050",5:"#B09040",6:"#8050B0"};
+    const LOC_COLORS = {1:"#ff9b9b",2:"#86efac",3:"#93c5fd",4:"#bef264",5:"#fde68a",6:"#c4b5fd"};
   </script>
   <script src="/static/js/game.js"></script>
 </body>
