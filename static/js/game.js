@@ -2,11 +2,13 @@
 const CARD_SCORING = {
   1: "1st+1 · 2nd+2 · 3rd−1",
   2: "1st+1 · 2nd+2 · 3rd−1",
-  3: "1st+3 · 2nd+1 · 3rd−2",
-  4: "1st−1 · 2nd+1 · 3rd+3",
-  5: "1st+5 · 2nd+3 · 3rd−4",
-  6: "1st+3 · 2nd+1 · 3rd±0",
+  3: "1st+2 · 2nd+1 · 3rd−1 · solo−1",
+  4: "1st+2 · 2nd+1 · 3rd−1 · solo−1",
+  5: "1st+1 · 2nd+2 · 3rd−1",
+  6: "1st+2 · 2nd+1 · 3rd−1",
 };
+// Card types with a solo arrival penalty
+const CARD_SOLO_PENALTY_CTS = new Set([3, 4]);
 
 const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";
 
@@ -1317,7 +1319,7 @@ function showScoresModal(state) {
     </div>
     <div style="font-size:.78rem;color:#CCAAFF;font-weight:700;margin-bottom:5px">Breakdown:</div>
     ${arrivals.map(r => {
-      const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+pts, 2nd+pts" : "3rd penalty";
+      const note = r.n === 1 ? (CARD_SOLO_PENALTY_CTS.has(r.card_type) ? "solo −1" : "solo") : r.n === 2 ? "1st+pts, 2nd+pts" : "3rd penalty";
       return `<div style="font-size:.76rem;color:#CCCCFF;padding:2px 0">
         ${r.location}: ${r.players.join(" → ")} [${note}]
       </div>`;
@@ -1347,7 +1349,7 @@ function dateResolutionHTML(state) {
   const results = state.date_results || [];
   const queue = state.date_queue || [];
   const scores = state.scores || {};
-  const CARD_PTS_JS = {1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]};
+  const CARD_PTS_JS = {1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[2,1,-1],5:[1,2,-1],6:[2,1,-1]};
   const pts = ct ? (CARD_PTS_JS[ct] || []) : [];
 
   let currentSection = "";
@@ -1529,8 +1531,8 @@ function endHTML(state) {
           }).join("")}
         </div>`).join("")
       : arrivals.map(r => {
-          const pts = ({1:[1,2,-1],2:[1,2,-1],3:[3,1,-2],4:[-1,1,3],5:[5,3,-4],6:[3,1,0]})[r.card_type] || [1,2,-1];
-          const note = r.n === 1 ? "solo — no pts" : r.n === 2
+          const pts = ({1:[1,2,-1],2:[1,2,-1],3:[2,1,-1],4:[2,1,-1],5:[1,2,-1],6:[2,1,-1]})[r.card_type] || [1,2,-1];
+          const note = r.n === 1 ? (CARD_SOLO_PENALTY_CTS.has(r.card_type) ? "solo −1" : "solo — 0 pts") : r.n === 2
             ? `1st:${pts[0]>=0?'+':''}${pts[0]} · 2nd:${pts[1]>=0?'+':''}${pts[1]}`
             : `1st:+${pts[0]} 2nd:+${pts[1]} 3rd:${pts[2]}`;
           return `<div class="breakdown-row">

@@ -64,15 +64,19 @@ LOCATION_NAMES = {
 }
 
 # Rule 2: per-card-type point distributions (1st-arrival pts, 2nd, 3rd)
-# Amplified spreads reward strategic early-arrival play more strongly.
+# Two groups: (+1,+2,-1) positional, (+2,+1,-1) reactive/late-game.
 CARD_PTS = {
-    1: (1, 2, -1),   # Coffee Shop  — late arrival best
-    2: (1, 2, -1),   # Park         — late arrival best
-    3: (3, 1, -2),   # Cinema       — strong first-arrival bonus
-    4: (-1, 1, 3),   # Restaurant   — arrive LAST for best score; swap own cards to optimize placement
-    5: (5, 3, -4),   # Beach        — being third wheel is devastating
-    6: (3, 1,  0),   # Museum       — early arrival rewarded
+    1: (1, 2, -1),   # Coffee Shop  — positional
+    2: (1, 2, -1),   # Park         — positional
+    3: (2, 1, -1),   # Cinema       — reactive, late game
+    4: (2, 1, -1),   # Restaurant   — reactive, late game
+    5: (1, 2, -1),   # Beach        — positional
+    6: (2, 1, -1),   # Museum       — reactive, late game
 }
+
+# Card types that carry a solo arrival penalty of -1 (arriving alone is punished).
+# Cinema and Restaurant are opponent-manipulation cards — useless when alone.
+CARD_SOLO_PENALTY_CTS = {3, 4}
 
 # Draft value estimates: strong card of this type (tuned after balance sim)
 # Restaurant and Beach are now equally desirable; Museum buffed.
@@ -380,14 +384,21 @@ def _calculate_scores(state):
         # Per-(ct, day) arrival scoring: arrivals keyed by "ct_day"
         for k, arr in state["arrivals"].items():
             n = len(arr)
-            if n < 2:
+            if n == 0:
                 continue
             parts = str(k).split("_")
             ct = int(parts[0])
-            pts = CARD_PTS[ct]
-            for i, pidx in enumerate(arr[:3]):
-                if i < len(pts):
-                    scores[state["players"][pidx]["name"]] += pts[i]
+            day = int(parts[1])
+            if n == 1:
+                # Solo arrival penalty for specific locations (Cinema/Restaurant)
+                if ct in CARD_SOLO_PENALTY_CTS:
+                    pidx = arr[0]
+                    scores[state["players"][pidx]["name"]] -= 1
+            else:
+                pts = CARD_PTS[ct]
+                for i, pidx in enumerate(arr[:3]):
+                    if i < len(pts):
+                        scores[state["players"][pidx]["name"]] += pts[i]
 
     # Day-matching bonus: type N on day N
     for ct in range(1, 7):
