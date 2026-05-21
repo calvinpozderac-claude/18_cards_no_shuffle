@@ -2,13 +2,13 @@
 const CARD_SCORING = {
   1: "1st+1 · 2nd+2 · 3rd−1",
   2: "1st+1 · 2nd+2 · 3rd−1",
-  3: "1st+2 · 2nd+1 · 3rd−1 · solo−1",
-  4: "1st+2 · 2nd+1 · 3rd−1 · solo−1",
-  5: "1st+1 · 2nd+2 · 3rd−1",
-  6: "1st+2 · 2nd+1 · 3rd−1",
+  3: "1st+2 · 2nd+1 · 3rd−1",
+  4: "1st+2 · 2nd+1 · 3rd−1",
+  5: "1st+1 · 2nd+2 · 3rd−1 · solo−1",
+  6: "1st+2 · 2nd+1 · 3rd−1 · solo−1",
 };
 // Card types with a solo arrival penalty
-const CARD_SOLO_PENALTY_CTS = new Set([3, 4]);
+const CARD_SOLO_PENALTY_CTS = new Set([5, 6]);
 
 const DAY_MATCH_HINT = "Day-matching bonus: if type N on day N — +2 (normal) or +1 (strong) if 2+ players; −1 if alone";
 

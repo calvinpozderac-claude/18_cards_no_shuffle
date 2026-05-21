@@ -75,8 +75,8 @@ CARD_PTS = {
 }
 
 # Card types that carry a solo arrival penalty of -1 (arriving alone is punished).
-# Cinema and Restaurant are opponent-manipulation cards — useless when alone.
-CARD_SOLO_PENALTY_CTS = {3, 4}
+# Beach and Museum are the strongest single-player abilities — solo play is risky.
+CARD_SOLO_PENALTY_CTS = {5, 6}
 
 # Draft value estimates: strong card of this type (tuned after balance sim)
 # Restaurant and Beach are now equally desirable; Museum buffed.
