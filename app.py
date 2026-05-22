@@ -390,7 +390,7 @@ def _calculate_scores(state):
             ct = int(parts[0])
             day = int(parts[1])
             if n == 1:
-                # Solo arrival penalty for specific locations (Cinema/Restaurant)
+                # Solo arrival penalty for Beach and Museum (both normal and strong)
                 if ct in CARD_SOLO_PENALTY_CTS:
                     pidx = arr[0]
                     scores[state["players"][pidx]["name"]] -= 1
