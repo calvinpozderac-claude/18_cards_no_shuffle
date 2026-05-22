@@ -266,8 +266,8 @@ def _resolve_current_date(state):
         p1, p2, p3 = participants[0], participants[1], participants[2]
         m1, m2, m3 = p1 in moved, p2 in moved, p3 in moved
         if m1 and m2 and m3:
-            result = {p1: 0, p2: 0, p3: 0}
-            outcome = "All three made a move — awkward! No points for anyone"
+            result = {p1: 0, p2: 0, p3: normal[p3] * 2}
+            outcome = f"All three made a move — p1 and p2 cancel out, {state['players'][p3]['name']} penalty doubled!"
         elif m3 and m1 and not m2:
             result = {p1: normal[p1], p2: normal[p3], p3: normal[p2]}
             outcome = f"{state['players'][p3]['name']} stole from {state['players'][p2]['name']}!"
