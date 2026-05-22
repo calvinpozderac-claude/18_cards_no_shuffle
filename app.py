@@ -443,6 +443,21 @@ def _arrivals_display(state):
         })
     return rows
 
+def _push_notification(state, message, source_pidx):
+    """Queue a notification for every human player except the one who acted."""
+    ai_set = set(state.get("ai_players", []))
+    required = [i for i in range(len(state["players"]))
+                if i not in ai_set and i != source_pidx]
+    if not required:
+        return
+    state.setdefault("notification_queue", []).append({
+        "message": message,
+        "source_pidx": source_pidx,
+        "required_acks": required,
+        "acked_by": [],
+    })
+
+
 def _new_state(player_names):
     n = len(player_names)
     # Build snake draft order
@@ -471,6 +486,7 @@ def _new_state(player_names):
         "locks": [],
         "pocketed_abilities": [None] * n,  # one slot per player; None or {card_type, strength}
         "round_start_player": 0,           # rotates each round to determine arrival order
+        "notification_queue": [],          # pending notifications for human players
     }
 
 def _assign_normal_cards(state):
@@ -718,6 +734,8 @@ def _process_choosing_ai(game):
         hand = state["players"][pidx].get("hand_cards", [])
         pocket = pockets[pidx] if pidx < len(pockets) else None
 
+        log_before = len(state.get("move_log", []))
+
         if not hand and pocket is None:
             _advance_choosing_turn(state)
             if state["phase"] == "date_resolution":
@@ -757,6 +775,14 @@ def _process_choosing_ai(game):
             break
         if state["phase"] == "game" and state.get("ability_resolution_queue"):
             _process_ai_ability_queue(game)
+
+        # Notify human players about what this AI did
+        log_after = len(state.get("move_log", []))
+        delta = log_after - log_before
+        if delta > 0:
+            msgs = list(reversed(state["move_log"][:delta]))
+            _push_notification(state, "\n".join(msgs), pidx)
+
         turns += 1
 
 
@@ -842,6 +868,19 @@ def _state_for_player(game, my_pidx):
     if state["phase"] == "choosing":
         out["is_my_turn"] = (my_pidx == state["current_player_idx"])
         out["whose_turn_name"] = state["players"][state["current_player_idx"]]["name"]
+
+    queue = state.get("notification_queue", [])
+    if queue:
+        notif = queue[0]
+        needs_ack = (my_pidx in notif["required_acks"]
+                     and my_pidx not in notif["acked_by"])
+        out["pending_notification"] = notif["message"] if needs_ack else None
+        out["notification_queue_len"] = len(queue)
+        out["notification_acked_count"] = len(notif["acked_by"])
+    else:
+        out["pending_notification"] = None
+        out["notification_queue_len"] = 0
+        out["notification_acked_count"] = 0
 
     if state["phase"] in ("date_resolution", "end"):
         out["date_queue"] = state.get("date_queue", [])
@@ -1887,6 +1926,11 @@ def api_choose_play(game_id, token):
     if pidx != state["current_player_idx"]:
         return jsonify({"error": "Not your turn"}), 400
 
+    # Block action if this player has an unacknowledged notification
+    queue = state.get("notification_queue", [])
+    if queue and pidx in queue[0]["required_acks"] and pidx not in queue[0]["acked_by"]:
+        return jsonify({"error": "Must acknowledge pending notification first"}), 400
+
     data = request.json or {}
     card_type = int(data.get("card_type", -1))
     day = int(data.get("day", -1))
@@ -1902,6 +1946,8 @@ def api_choose_play(game_id, token):
     card_info = next((c for c in hand if c["card_type"] == card_type), None)
     strength = card_info.get("strength", "normal") if card_info else "normal"
 
+    log_before = len(state.get("move_log", []))
+
     if not _play_from_hand(state, pidx, card_type, day):
         return jsonify({"error": "Failed to play card"}), 400
 
@@ -1914,6 +1960,13 @@ def api_choose_play(game_id, token):
     state["ability_resolution_cards"] = {str(pidx): {"ct": card_type, "strength": strength}}
 
     _advance_ability_queue(game)
+
+    # Notify other human players about this player's full turn
+    log_after = len(state.get("move_log", []))
+    delta = log_after - log_before
+    if delta > 0:
+        msgs = list(reversed(state["move_log"][:delta]))
+        _push_notification(state, "\n".join(msgs), pidx)
 
     if state["phase"] == "choosing":
         _process_choosing_ai(game)
@@ -1939,10 +1992,18 @@ def api_choose_pocket(game_id, token):
     hand = state["players"][pidx].get("hand_cards", [])
     if hand:
         return jsonify({"error": "Must play a card from your hand first"}), 400
+
+    # Block action if this player has an unacknowledged notification
+    queue = state.get("notification_queue", [])
+    if queue and pidx in queue[0]["required_acks"] and pidx not in queue[0]["acked_by"]:
+        return jsonify({"error": "Must acknowledge pending notification first"}), 400
+
     pockets = state.get("pocketed_abilities", [])
     pocket = pockets[pidx] if pidx < len(pockets) else None
     if pocket is None:
         return jsonify({"error": "No pocketed ability"}), 400
+
+    log_before = len(state.get("move_log", []))
 
     state["pocketed_abilities"][pidx] = None
     ct, strength = pocket["card_type"], pocket["strength"]
@@ -1955,6 +2016,13 @@ def api_choose_pocket(game_id, token):
 
     _advance_ability_queue(game)
 
+    # Notify other human players about this player's full turn
+    log_after = len(state.get("move_log", []))
+    delta = log_after - log_before
+    if delta > 0:
+        msgs = list(reversed(state["move_log"][:delta]))
+        _push_notification(state, "\n".join(msgs), pidx)
+
     if state["phase"] == "choosing":
         _process_choosing_ai(game)
     if state["phase"] == "game" and state.get("ability_resolution_queue"):
@@ -1962,6 +2030,24 @@ def api_choose_pocket(game_id, token):
         if state["phase"] == "choosing":
             _process_choosing_ai(game)
 
+    return jsonify(_state_for_player(game, pidx))
+
+
+@app.route("/api/game/<game_id>/<token>/ack_notification", methods=["POST"])
+def api_ack_notification(game_id, token):
+    """Acknowledge (dismiss) the current pending notification for this player."""
+    game, pidx = _resolve(game_id, token)
+    if game is None or pidx is None:
+        return jsonify({"error": "not found"}), 404
+    state = game["state"]
+    queue = state.get("notification_queue", [])
+    if queue:
+        notif = queue[0]
+        if pidx not in notif["acked_by"]:
+            notif["acked_by"].append(pidx)
+        if all(r in notif["acked_by"] for r in notif["required_acks"]):
+            queue.pop(0)
+        state["notification_queue"] = queue
     return jsonify(_state_for_player(game, pidx))
 
 

@@ -430,6 +430,22 @@ function render(state) {
     app.innerHTML = endHTML(state);
     bindEnd();
   }
+
+  // Notification modal — fixed overlay, rendered on top of any phase
+  const notifHtml = buildNotificationModal(state);
+  let notifContainer = document.getElementById("notif-modal-container");
+  if (!notifContainer) {
+    notifContainer = document.createElement("div");
+    notifContainer.id = "notif-modal-container";
+    document.body.appendChild(notifContainer);
+  }
+  notifContainer.innerHTML = notifHtml;
+  if (notifHtml) {
+    document.getElementById("btn-ack-notif")?.addEventListener("click", async () => {
+      const resp = await apiPost(gameUrl("ack_notification"), {});
+      if (resp && !resp.error) { G = resp; render(G); }
+    });
+  }
 }
 
 function showMsg(msg, cls = "") {
@@ -933,6 +949,25 @@ function buildPocketChoiceModal(state) {
     <div class="bank-modal-btns" style="flex-direction:column;gap:8px;margin-top:12px">
       ${buttons}
     </div>
+  </div>
+</div>`;
+}
+
+
+function buildNotificationModal(state) {
+  if (!state.pending_notification) return "";
+  const lines = state.pending_notification.split("\n").filter(Boolean);
+  const total = state.notification_queue_len || 1;
+  const counter = total > 1 ? `<div class="notif-modal-counter">${total} notification${total > 1 ? "s" : ""} pending</div>` : "";
+  return `
+<div class="notif-modal-overlay" id="notif-modal">
+  <div class="notif-modal">
+    <div class="notif-modal-title">What just happened</div>
+    <div class="notif-modal-body">
+      ${lines.map(l => `<div class="notif-modal-line">${l}</div>`).join("")}
+    </div>
+    ${counter}
+    <button class="btn btn-primary" id="btn-ack-notif" style="min-width:120px">Got it</button>
   </div>
 </div>`;
 }
