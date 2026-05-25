@@ -1,512 +1,815 @@
-/* ── api helpers ─────────────────────────────────────────────────────────── */
-async function apiGet(url) {
-  const r = await fetch(url);
-  return r.json();
-}
-async function apiPost(url, data = {}) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  return r.json();
-}
+/* ── global state ──────────────────────────────────────────────────────────── */
+let gs = null;   // server game state
+let ls = {       // local UI selections
+  uiStep:           "idle",    // idle | pick_dest | pick_action
+  selectedCard:     null,
+  selectedDest:     null,
+  switchFirst:      null,      // first stack id for switch_piles action
+  swapStack:        null,      // stack index chosen for swap_order action
+  swapFirst:        null,      // first play index for swap_order action
+  dateHandoffDone:  false,
+  showTargetDone:   false,
+  peekChosen:       false,
+};
 
-/* ── global state ────────────────────────────────────────────────────────── */
-let G = null;           // current game state from server
-let msgTimer = null;    // clears transient success messages
-
-/* ── entry point ─────────────────────────────────────────────────────────── */
-document.addEventListener("DOMContentLoaded", async () => {
-  G = await apiGet("/api/state");
-  render(G);
-});
-
-/* ── main render dispatch ─────────────────────────────────────────────────── */
-function render(state) {
-  G = state;
-  const app = document.getElementById("app");
-  if      (state.phase === "setup")       app.innerHTML = setupHTML();
-  else if (state.phase === "arrangement") app.innerHTML = arrangeHTML(state);
-  else if (state.phase === "game")        app.innerHTML = gameHTML(state);
-  else if (state.phase === "end")         app.innerHTML = endHTML(state);
-  bindAll(state);
+/* ── API helpers ───────────────────────────────────────────────────────────── */
+async function api(path, body) {
+  const opts = body != null
+    ? { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) }
+    : { method: "GET" };
+  const res  = await fetch(path, opts);
+  const data = await res.json();
+  if (data.error) { showToast("⚠ " + data.error); return null; }
+  gs = data;
+  render();
+  return data;
 }
 
-function showMsg(msg, cls = "") {
-  const el = document.getElementById("action-msg");
+function showToast(msg) {
+  const el = document.getElementById("toast");
   if (!el) return;
-  if (msgTimer) clearTimeout(msgTimer);
   el.textContent = msg;
-  el.className = "action-msg " + cls;
-  if (cls === "success") msgTimer = setTimeout(() => { el.textContent = ""; el.className = "action-msg"; }, 2500);
+  el.classList.add("visible");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("visible"), 3000);
 }
 
-/* ── SETUP ───────────────────────────────────────────────────────────────── */
-function setupHTML() {
+/* ── colour helpers ────────────────────────────────────────────────────────── */
+function pc(pi)    { return gs.player_colors[pi]; }
+function plt(pi)   { return gs.player_light[pi]; }
+function pname(pi) { return gs.players[pi].name; }
+
+/* ── main render ───────────────────────────────────────────────────────────── */
+function render() {
+  const app = document.getElementById("app");
+  if (!gs || gs.phase === "setup") {
+    app.innerHTML = renderSetup();
+    bindSetup();
+    return;
+  }
+  if (gs.phase === "card_playing") {
+    app.innerHTML = renderCardPlaying();
+    bindCardPlaying();
+    return;
+  }
+  if (gs.phase === "date_phase") {
+    app.innerHTML = renderDatePhase();
+    bindDatePhase();
+    return;
+  }
+  if (gs.phase === "end") {
+    app.innerHTML = renderEnd();
+    return;
+  }
+}
+
+/* ══ SETUP ═════════════════════════════════════════════════════════════════════ */
+function renderSetup() {
+  const colors = ["#E05555", "#5578E0", "#3DC470"];
+  const fields = [0, 1, 2].map(i => `
+    <div class="field-row">
+      <label>Player ${i + 1}</label>
+      <div class="swatch" style="background:${colors[i]}"></div>
+      <input id="name${i}" type="text" placeholder="Player ${i + 1}" maxlength="18" />
+    </div>`).join("");
+
   return `
-<div class="screen">
-  <h1 class="title">Don't Be the Third Wheel!</h1>
-  <p class="subtitle">A romantic scheduling strategy game for 2–3 players</p>
-
-  <div class="setup-form">
-    <div class="form-group">
-      <label>Number of Players</label>
-      <div class="radio-group">
-        <label><input type="radio" name="np" value="2" id="np2"> 2 Players</label>
-        <label><input type="radio" name="np" value="3" id="np3" checked> 3 Players</label>
-      </div>
-    </div>
-    <div class="form-group">
-      <label>Player Names</label>
-      <div class="name-fields">
-        ${[1,2,3].map(i => `
-          <div class="player-name-row" id="name-row-${i}">
-            <span class="pnum">P${i}</span>
-            <input class="player-name-input" id="pname${i}" placeholder="Player ${i}" value="Player ${i}" />
-          </div>`).join("")}
-      </div>
-    </div>
-    <button id="start-btn" class="btn btn-primary">▶ Start Game</button>
-  </div>
-
-  <div class="rules-grid">
-    <div class="rules-box">
-      <h3>Card Abilities</h3>
-      ${Object.entries(CARD_ABILITIES).map(([ct, ab]) => `
-        <div class="rule-row">
-          <span class="card-badge ct-${ct}">${ct}</span>
-          <span class="loc-name">${LOCATION_NAMES[ct]}</span>: ${ab}
-        </div>`).join("")}
-    </div>
-    <div class="rules-box">
-      <h3>Scoring</h3>
-      <div class="rule-row">2 players same card on same day → 1st arrival: +1 pt,  2nd arrival: +2 pts</div>
-      <div class="rule-row">3 players same card on same day → 1st: 0,  2nd: 0,  3rd (third wheel!): −1 pt</div>
-      <div class="rule-row">1 player alone on a day → no points</div>
+  <div id="setup">
+    <div class="title" style="font-size:1.5rem">💔 Don't Be The Third Wheel!</div>
+    <div class="subtitle">A game of dates, strategy &amp; sabotage — 3 players</div>
+    ${fields}
+    <div style="text-align:center;margin-top:20px">
+      <button class="btn btn-primary" id="btn-start">▶ Start Game</button>
     </div>
   </div>
-</div>`;
+  <div id="toast"></div>
+  ${renderCardRef()}`;
 }
 
 function bindSetup() {
-  // toggle third name row based on player count
-  const updateRows = () => {
-    const n = +document.querySelector('input[name="np"]:checked').value;
-    document.getElementById("name-row-3").style.display = n >= 3 ? "" : "none";
+  const btn = document.getElementById("btn-start");
+  if (!btn || btn._bound) return;
+  btn._bound = true;
+  btn.onclick = async () => {
+    const names = [0, 1, 2].map(i => {
+      const el = document.getElementById("name" + i);
+      return el ? el.value.trim() || `Player ${i + 1}` : `Player ${i + 1}`;
+    });
+    resetLocalState();
+    await api("/api/setup", { names });
   };
-  document.querySelectorAll('input[name="np"]').forEach(r => r.addEventListener("change", updateRows));
-  updateRows();
-
-  document.getElementById("start-btn").addEventListener("click", async () => {
-    const n = +document.querySelector('input[name="np"]:checked').value;
-    const names = [1, 2, 3].map(i => document.getElementById(`pname${i}`).value.trim());
-    G = await apiPost("/api/setup", { num_players: n, names });
-    render(G);
-  });
 }
 
-/* ── ARRANGEMENT ──────────────────────────────────────────────────────────── */
-function arrangeHTML(state) {
-  const pidx = state.arrange_idx;
-  const player = state.players[pidx];
-  const total = state.players.length;
-
-  return `
-<div class="arrange-screen">
-  <h1 class="title" style="font-size:1.8rem">Schedule Your Dates!</h1>
-  <p class="subtitle">
-    ${pidx > 0 ? `<strong style="color:#FFD700">Pass the device to ${player.name}.</strong><br>` : ""}
-    Player <strong>${pidx + 1} / ${total}</strong>: <strong style="color:#FFD700">${player.name}</strong>
-    — assign each location to a Day (others can't see your choices).
-  </p>
-
-  <div class="rules-box" style="max-width:500px;margin:0 auto 16px;font-size:.82rem">
-    <strong style="color:#CCAAFF">How to arrange:</strong>
-    Click a location card to select it, then click a Day slot to place it.
-    Each location goes to exactly one day.
-  </div>
-
-  <p style="text-align:center;font-weight:700;color:#CC99FF;margin-bottom:8px">Location Cards</p>
-  <div class="loc-cards" id="loc-cards">
-    ${[1,2,3,4,5,6].map(ct => `
-      <button class="loc-btn ct-${ct}" id="loc-${ct}"
-              style="background:${LOC_COLORS[ct]};border-color:${LOC_COLORS[ct]}">
-        <span class="num">${ct}</span>
-        <span class="name">${LOCATION_NAMES[ct]}</span>
-      </button>`).join("")}
-  </div>
-
-  <p style="text-align:center;font-weight:700;color:#CC99FF;margin:4px 0 8px">Day Slots</p>
-  <div class="day-slots" id="day-slots">
-    ${[1,2,3,4,5,6].map(d => `
-      <div class="day-slot" id="slot-${d}">
-        <span class="day-label">Day ${d}</span>
-        <span class="day-ct"></span>
-        <span class="day-name" style="color:#8870aa">(empty)</span>
-      </div>`).join("")}
-  </div>
-
-  <p class="arrange-status" id="arr-status">Select a location card to begin.</p>
-  <button id="arr-confirm" class="btn btn-primary arrange-confirm" disabled>Confirm Arrangement →</button>
-</div>`;
+function resetLocalState() {
+  ls = { uiStep: "idle", selectedCard: null, selectedDest: null,
+         switchFirst: null, swapStack: null, swapFirst: null,
+         dateHandoffDone: false, showTargetDone: false, peekChosen: false };
 }
 
-function bindArrange(state) {
-  let selCt = 0;
-  const assigned = {};   // ct -> day
-  const dayTaken = {};   // day -> ct
+/* ══ CARD PLAYING ══════════════════════════════════════════════════════════════ */
+function renderCardPlaying() {
+  const cpidx   = gs.current_player_idx;
+  const pending = gs.pending_action;
 
-  function selectCt(ct) {
-    if (assigned[ct]) { setStatus(`Card ${ct} is already placed on Day ${assigned[ct]}!`); return; }
-    selCt = ct;
-    document.querySelectorAll(".loc-btn").forEach(b => b.classList.remove("selected"));
-    document.getElementById(`loc-${ct}`).classList.add("selected");
-    setStatus(`Selected: ${ct} – ${LOCATION_NAMES[ct]}. Now click a Day slot.`);
-  }
-
-  function assignDay(day) {
-    if (!selCt) { setStatus("Select a location card first!"); return; }
-    if (assigned[selCt]) { setStatus(`Card ${selCt} is already placed!`); return; }
-    if (dayTaken[day]) { setStatus(`Day ${day} already has a card! Choose another.`); return; }
-
-    assigned[selCt] = day;
-    dayTaken[day] = selCt;
-
-    // update slot
-    const slot = document.getElementById(`slot-${day}`);
-    slot.classList.add("filled");
-    slot.style.background = LOC_COLORS[selCt];
-    slot.querySelector(".day-ct").textContent = selCt;
-    slot.querySelector(".day-name").textContent = LOCATION_NAMES[selCt];
-    slot.querySelector(".day-name").style.color = "";
-
-    // disable loc button
-    const locBtn = document.getElementById(`loc-${selCt}`);
-    locBtn.disabled = true;
-    locBtn.classList.remove("selected");
-
-    selCt = 0;
-    const remaining = 6 - Object.keys(assigned).length;
-    if (remaining === 0) {
-      setStatus("All cards placed! Click Confirm to continue.");
-      document.getElementById("arr-confirm").disabled = false;
-    } else {
-      setStatus(`${remaining} card(s) still to place.`);
-    }
-  }
-
-  function setStatus(msg) { document.getElementById("arr-status").textContent = msg; }
-
-  document.querySelectorAll(".loc-btn").forEach(btn => {
-    btn.addEventListener("click", () => selectCt(+btn.id.split("-")[1]));
-  });
-  document.querySelectorAll(".day-slot").forEach(slot => {
-    slot.addEventListener("click", () => assignDay(+slot.id.split("-")[1]));
-  });
-  document.getElementById("arr-confirm").addEventListener("click", async () => {
-    G = await apiPost("/api/arrange", { arrangement: assigned });
-    render(G);
-  });
-}
-
-/* ── GAME ─────────────────────────────────────────────────────────────────── */
-function gameHTML(state) {
-  const cur = state.current_player_idx;
-  const scores = state.scores || {};
-
-  return `
-<div class="game-wrap">
-  <div class="topbar">
-    <span class="topbar-title">Don't Be the Third Wheel!</span>
-    <span class="topbar-turn">Turn ${state.turn_count + 1} — <strong>${state.players[cur].name}</strong>'s turn</span>
-    <div class="topbar-btns">
-      <button class="btn btn-green" id="btn-scores">Scores</button>
-      <button class="btn btn-red"   id="btn-end">End Game</button>
-    </div>
-  </div>
-
-  <div class="action-strip">
-    <span class="action-msg" id="action-msg">
-      ${state.pending_action ? (state.action_message || "") : ""}
-    </span>
-    ${state.pending_action ? `<button class="btn btn-cancel" id="btn-cancel">✕ Cancel</button>` : ""}
-  </div>
-
-  <div class="board-container">
-    <div class="board">
-      <!-- header row -->
-      <div class="board-header" style="background:transparent"></div>
-      ${[1,2,3,4,5,6].map(d => `<div class="board-header">Day ${d}</div>`).join("")}
-
-      <!-- player rows -->
-      ${state.players.map((player, pi) => `
-        <div class="board-player-label ${pi === cur ? "active-player" : ""}">
-          ${pi === cur ? "▶ " : ""}${player.name}
-        </div>
-        ${player.cards.map((card, di) => cardBtnHTML(state, pi, di + 1, card)).join("")}
-      `).join("")}
-    </div>
-  </div>
-
-  <div class="score-strip">
-    ${state.players.map(p => `
-      <span class="score-item"><strong>${p.name}</strong>: ${scores[p.name] !== undefined ? (scores[p.name] >= 0 ? "+" : "") + scores[p.name] : 0} pts</span>
-    `).join("")}
-  </div>
-</div>`;
-}
-
-function cardBtnHTML(state, pi, day, card) {
-  const cur = state.current_player_idx;
-  const action = state.pending_action;
-  const ctx = state.action_ctx || {};
-
-  let cls = "card-btn";
-  cls += card.face_up ? ` face-up ct-${card.card_type}` : " face-down";
-
-  if (!action) {
-    // no pending action — highlight current player's flippable cards
-    if (pi === cur && !card.face_up) cls += " flippable";
+  let instruction;
+  if (pending) {
+    instruction = gs.action_message || "Resolve the pending action.";
+  } else if (ls.uiStep === "pick_dest") {
+    instruction = `Card ${ls.selectedCard} selected — click a pile to play it there, or use the ＋ buttons to start a new pile.`;
+  } else if (ls.uiStep === "pick_action") {
+    instruction = `Card ${ls.selectedCard} chosen for this pile — use the action or skip it?`;
   } else {
-    // figure out if this card is a valid target, first-selected, or dimmed
-    const isOther = pi !== cur;
-    const isOwn   = pi === cur;
-    let valid = false;
-
-    if (action === "flip_other_down")  valid = isOther && card.face_up;
-    if (action === "flip_own_down")    valid = isOwn && card.face_up;
-    if (action === "swap_other_1")     valid = isOther;
-    if (action === "swap_other_2") {
-      valid = pi === ctx.first_pi && day !== ctx.first_day;
-      if (pi === ctx.first_pi && day === ctx.first_day) cls += " selected-first";
-    }
-    if (action === "swap_own_1")       valid = isOwn;
-    if (action === "swap_own_2") {
-      valid = isOwn && day !== ctx.first_day;
-      if (isOwn && day === ctx.first_day) cls += " selected-first";
-    }
-    if (action === "change_arr_other") {
-      const k = `${day},${card.card_type}`;
-      const arr = state.arrivals ? state.arrivals[k] : [];
-      valid = isOther && card.face_up && arr && arr.length >= 2;
-    }
-    if (action === "change_arr_own") {
-      const k = `${day},${card.card_type}`;
-      const arr = state.arrivals ? state.arrivals[k] : [];
-      valid = isOwn && card.face_up && arr && arr.length >= 2;
-    }
-    if (action === "set_arrival") valid = false; // waiting for modal
-
-    if (valid)  cls += " target-valid";
-    else        cls += " dimmed";
+    instruction = `${pname(cpidx)}'s turn — pick a card from your hand below.`;
   }
 
-  const arrLabels = { 1: "▲ 1st", 2: "■ 2nd", 3: "▼ 3rd" };
-  const arrText = card.face_up ? (arrLabels[card.arrival] || `#${card.arrival}`) : "";
+  const canNew = canCreateNew();
 
   return `
-<button class="card-btn ${cls}"
-        data-pi="${pi}" data-day="${day}"
-        ${action === "set_arrival" ? "disabled" : ""}>
-  ${card.face_up ? `<span class="arr-badge">${arrText}</span>` : ""}
-  <span class="card-ct">${card.face_up ? card.card_type : "?"}</span>
-  <span class="card-loc">${card.face_up ? LOCATION_NAMES[card.card_type] : "face down"}</span>
-</button>`;
+  <div class="screen">
+    <div class="title" style="font-size:1.3rem;margin-bottom:6px">Don't Be The Third Wheel!</div>
+    ${renderStatusBar()}
+    <div id="msg-bar">${instruction}</div>
+
+    <div id="stacks-area">
+      <div class="new-stack-btn${canNew ? "" : " unavailable"}" id="btn-new-left">＋</div>
+      ${gs.stacks.map((s, si) => renderStackCol(s, si, pending, cpidx)).join("")}
+      <div class="new-stack-btn${canNew ? "" : " unavailable"}" id="btn-new-right">＋</div>
+    </div>
+
+    ${pending ? "" : renderHandArea(cpidx)}
+    ${renderActionPanel(pending, cpidx)}
+    <div id="toast"></div>
+    ${renderCardRef()}
+  </div>`;
 }
 
-function bindGame(state) {
-  // card clicks
-  document.querySelectorAll(".card-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const pi  = +btn.dataset.pi;
-      const day = +btn.dataset.day;
-      await handleCardClick(pi, day);
+function canCreateNew() {
+  if (gs.stacks.length >= 6) return false;
+  if (gs.pending_action)      return false;
+  if (ls.uiStep === "pick_action") return false;
+  return true;
+}
+
+function getPlayedCards(pidx) {
+  const cards = [];
+  gs.stacks.forEach(s => s.plays.forEach(p => { if (p.player_idx === pidx) cards.push(p.card_num); }));
+  return cards;
+}
+
+function twPosAtDate(di) {
+  if (di < 2) return 2;
+  if (di < 4) return 1;
+  return 0;
+}
+
+/* ── stack column ─────────────────────────────────────────────────────────── */
+function renderStackCol(stack, si, pending, cpidx) {
+  const playedIds = gs.players[cpidx].cards_played_to || [];
+  let cls = "stack-col";
+
+  if (!pending && ls.uiStep === "pick_dest" && !playedIds.includes(stack.id)) {
+    cls += " selectable";
+  }
+  if (pending === "switch_piles") {
+    if (ls.switchFirst === null || ls.switchFirst !== stack.id) cls += " selectable";
+    if (ls.switchFirst === stack.id) cls += " selected-1";
+  }
+  if (pending === "swap_order" && ls.swapStack === null && stack.plays.length >= 2) {
+    cls += " swap-target selectable";
+  }
+  if (pending === "swap_order" && ls.swapStack === si) {
+    cls += " swap-target";
+  }
+
+  const twPos = twPosAtDate(si);
+  let twNote;
+  if (stack.plays.length === 3) {
+    twNote = `<span class="tw-badge">${pname(stack.plays[twPos].player_idx).substring(0,6)} = 3W</span>`;
+  } else {
+    const lbl = ["3rd=3W","2nd=3W","1st=3W"][twPos];
+    twNote = `<span class="tw-badge future">${lbl}</span>`;
+  }
+
+  const playsHtml   = stack.plays.map((p, pi) => renderPlayCard(p, pi, si, pending, cpidx, twPos)).join("");
+  const emptySlots  = 3 - stack.plays.length;
+  const emptyHtml   = Array.from({length: emptySlots}, () =>
+    `<div class="play-card" style="background:#1e1030;border:1px dashed #2e1a50;min-height:42px;opacity:.4">
+       <div class="play-card-sub" style="text-align:center;color:#553388">— empty —</div>
+     </div>`).join("");
+
+  return `
+  <div class="${cls}" data-stack-id="${stack.id}" data-stack-idx="${si}">
+    <div class="stack-header">Pile ${si + 1} ${twNote}</div>
+    ${playsHtml}${emptyHtml}
+  </div>`;
+}
+
+function renderPlayCard(play, pi, si, pending, cpidx, twPos) {
+  const bg     = plt(play.player_idx);
+  const info   = gs.card_info[play.card_num];
+  const active = play.modifier_active;
+  const mType  = active ? (info.type === "bonus" ? "bonus" : "debuff") : "off";
+  const mLabel = active
+    ? (info.type === "bonus" ? "✓ Bonus" : "✗ Debuff")
+    : (info.type === "bonus" ? "✕ Bonus off" : "✓ Debuff off");
+  const arrLbl = ["1st","2nd","3rd"][pi];
+  const isTW   = pi === twPos;
+
+  let cls = "play-card";
+  if (pending === "swap_order" && si === ls.swapStack) {
+    cls += " selectable";
+    if (ls.swapFirst === pi) cls += " selected-swap1";
+  }
+  if (pending === "deact_act" && play.player_idx !== cpidx && !play.used_action) {
+    cls += " deact-target";
+  }
+
+  return `
+  <div class="${cls}" style="background:${bg}" data-si="${si}" data-pi="${pi}">
+    ${isTW ? `<div class="tw-play-badge">3W</div>` : ""}
+    <span class="arrival-badge">${arrLbl}</span>
+    <div class="play-card-inner">${pname(play.player_idx).substring(0,8)} · C${play.card_num}</div>
+    <div class="play-card-sub">${play.used_action ? "⚡ Action" : "○ Skipped"}</div>
+    <div class="modifier-tag ${mType}">${mLabel}</div>
+  </div>`;
+}
+
+/* ── hand area ─────────────────────────────────────────────────────────────── */
+function renderHandArea(cpidx) {
+  const played   = getPlayedCards(cpidx);
+  const disabled = ls.uiStep === "pick_dest" || ls.uiStep === "pick_action";
+
+  const cards = [1,2,3,4,5,6].map(cn => {
+    const info    = gs.card_info[cn];
+    const isPlayed = played.includes(cn);
+    const isSel   = ls.selectedCard === cn;
+    let cls = "hand-card";
+    if (isPlayed)               cls += " played";
+    if (isSel)                  cls += " selected";
+    if (disabled && !isPlayed && !isSel) cls += " disabled";
+    const mCls = info.type === "bonus" ? "bonus" : "debuff";
+    return `
+    <div class="${cls}" data-card="${cn}" style="background:${plt(cpidx)}">
+      <div class="hand-card-type">${info.type.toUpperCase()}</div>
+      <div class="hand-card-num">${cn}</div>
+      <div class="hand-card-action">${info.action}</div>
+      <div class="hand-card-mod ${mCls}">${info.type === "bonus" ? "B: " : "D: "}${info.modifier}</div>
+    </div>`;
+  }).join("");
+
+  return `
+  <div id="hand-area">
+    <h3 style="color:${pc(cpidx)}">${pname(cpidx)}'s Hand</h3>
+    <div class="hand-cards">${cards}</div>
+  </div>`;
+}
+
+/* ── action panel ─────────────────────────────────────────────────────────── */
+function renderActionPanel(pending, cpidx) {
+  if (pending) {
+    return `
+    <div id="action-panel">
+      <h3>Resolve Action</h3>
+      <p style="color:#BBAACC;margin-bottom:12px">${gs.action_message || ""}</p>
+      <button class="btn btn-cancel" id="btn-cancel-action">Skip / Cancel</button>
+    </div>`;
+  }
+
+  if (ls.uiStep === "pick_action") {
+    const info    = gs.card_info[ls.selectedCard];
+    const isBonus = info.type === "bonus";
+    return `
+    <div id="action-panel">
+      <h3>Card ${ls.selectedCard} — How to play?</h3>
+      <div class="action-choices">
+        <div class="action-choice-card use" id="btn-use-action">
+          <div class="choice-label">⚡ Use the Action</div>
+          <div class="choice-desc">
+            <b>${info.action}</b><br>
+            <span style="color:#FF9090">${isBonus ? "Bonus forfeited: " + info.modifier : "Debuff activated: " + info.modifier}</span>
+          </div>
+        </div>
+        <div class="action-choice-card skip" id="btn-skip-action">
+          <div class="choice-label">○ Skip the Action</div>
+          <div class="choice-desc">
+            <b>No action.</b><br>
+            <span style="color:${isBonus ? "#88FFAA" : "#FFAA88"}">${isBonus ? "Bonus kept: " + info.modifier : "Debuff avoided: " + info.modifier}</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-ghost btn-sm" id="btn-back-dest">← Back</button>
+      </div>
+    </div>`;
+  }
+
+  return "";
+}
+
+/* ── status bar ─────────────────────────────────────────────────────────────── */
+function renderStatusBar() {
+  const cpidx  = gs.current_player_idx;
+  const played = gs.stacks.reduce((a, s) => a + s.plays.length, 0);
+  const tags   = gs.players.map((p, i) =>
+    `<span class="player-tag" style="border:1.5px solid ${i === cpidx ? pc(i) : "transparent"}">
+      <span class="dot" style="background:${pc(i)}"></span>${p.name}
+    </span>`).join("");
+
+  return `
+  <div id="status-bar">
+    <span id="turn-label" style="color:${pc(cpidx)}">${pname(cpidx)}'s Turn</span>
+    ${tags}
+    <span style="margin-left:auto;font-size:.8rem;color:#665588">${played}/18 cards</span>
+  </div>`;
+}
+
+/* ── bind card playing ─────────────────────────────────────────────────────── */
+function bindCardPlaying() {
+  const pending = gs.pending_action;
+  const cpidx   = gs.current_player_idx;
+  const canNew  = canCreateNew();
+
+  // new pile buttons
+  if (canNew && ls.uiStep === "pick_dest") {
+    const btnL = document.getElementById("btn-new-left");
+    const btnR = document.getElementById("btn-new-right");
+    if (btnL) btnL.onclick = () => handleDestSelect("new_left");
+    if (btnR) btnR.onclick = () => handleDestSelect("new_right");
+  }
+
+  // hand card clicks
+  document.querySelectorAll(".hand-card:not(.played):not(.disabled)").forEach(el => {
+    el.addEventListener("click", () => {
+      if (ls.uiStep === "pick_dest" || ls.uiStep === "pick_action") return;
+      const cn = parseInt(el.dataset.card);
+      ls.selectedCard = (ls.selectedCard === cn) ? null : cn;
+      ls.uiStep       = ls.selectedCard ? "pick_dest" : "idle";
+      ls.selectedDest = null;
+      render();
     });
   });
 
-  document.getElementById("btn-cancel")?.addEventListener("click", async () => {
-    G = await apiPost("/api/cancel");
-    render(G);
+  // stack clicks
+  document.querySelectorAll(".stack-col").forEach(col => {
+    col.addEventListener("click", (e) => {
+      if (e.target.closest(".play-card")) return;
+      const sid = parseInt(col.dataset.stackId);
+      const si  = parseInt(col.dataset.stackIdx);
+
+      if (!pending && ls.uiStep === "pick_dest") {
+        const playedIds = gs.players[cpidx].cards_played_to || [];
+        if (!playedIds.includes(sid)) handleDestSelect(sid);
+        return;
+      }
+      if (pending === "switch_piles") { handleSwitchClick(sid); return; }
+      if (pending === "swap_order" && ls.swapStack === null && col.classList.contains("swap-target")) {
+        ls.swapStack = si; render(); return;
+      }
+    });
   });
 
-  document.getElementById("btn-scores").addEventListener("click", () => showScoresModal(G));
-  document.getElementById("btn-end").addEventListener("click", async () => {
-    if (confirm("End the game now and see final scores?")) {
-      G = await apiPost("/api/end_game");
-      render(G);
-    }
+  // play card clicks (within stacks)
+  document.querySelectorAll(".play-card").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const si = parseInt(el.dataset.si);
+      const pi = parseInt(el.dataset.pi);
+      if (pending === "swap_order" && si === ls.swapStack) { handleSwapClick(si, pi); return; }
+      if (pending === "deact_act" && el.classList.contains("deact-target")) { handleDeactClick(si, pi); return; }
+    });
   });
+
+  // action / skip
+  const btnUse  = document.getElementById("btn-use-action");
+  const btnSkip = document.getElementById("btn-skip-action");
+  const btnBack = document.getElementById("btn-back-dest");
+  if (btnUse)  btnUse.onclick  = () => submitPlayCard(true);
+  if (btnSkip) btnSkip.onclick = () => submitPlayCard(false);
+  if (btnBack) btnBack.onclick = () => { ls.uiStep = "pick_dest"; ls.selectedDest = null; render(); };
+
+  // cancel action
+  const btnCancel = document.getElementById("btn-cancel-action");
+  if (btnCancel) btnCancel.onclick = () => {
+    ls.switchFirst = null; ls.swapStack = null; ls.swapFirst = null;
+    api("/api/cancel_action", {});
+  };
 }
 
-async function handleCardClick(pi, day) {
-  if (G.pending_action) {
-    // send as action target
-    const resp = await apiPost("/api/action", { player_idx: pi, day });
-    const result = resp.action_result || {};
-    if (result.error) {
-      showMsg(result.error, "error");
-      return;  // don't re-render — keep current state
-    }
-    if (result.needs_position && result.arrival_info) {
-      // store partial state then show modal
-      G = resp;
-      render(G);
-      showArrivalModal(result.arrival_info);
-      return;
-    }
-    if (result.message) showMsg(result.message, "success");
-    G = resp;
-    render(G);
-    if (result.message) showMsg(result.message, "success");
-  } else {
-    // normal flip
-    if (pi !== G.current_player_idx) {
-      showMsg(`It's ${G.players[G.current_player_idx].name}'s turn!`, "error");
-      return;
-    }
-    const card = G.players[pi].cards[day - 1];
-    if (card.face_up) { showMsg("That card is already face up.", "error"); return; }
-    G = await apiPost("/api/flip", { day });
-    render(G);
-    if (G.action_message) showMsg(G.action_message);
+function handleDestSelect(dest) {
+  if (ls.uiStep !== "pick_dest" || ls.selectedCard === null) return;
+  ls.selectedDest = dest;
+  ls.uiStep       = "pick_action";
+  render();
+}
+
+async function submitPlayCard(useAction) {
+  if (ls.selectedCard === null || ls.selectedDest === null) return;
+  const body = { card_num: ls.selectedCard, stack_target: ls.selectedDest, use_action: useAction };
+  ls.selectedCard = null; ls.selectedDest = null; ls.uiStep = "idle";
+  ls.switchFirst = null;  ls.swapStack = null;    ls.swapFirst = null;
+  await api("/api/play_card", body);
+}
+
+function handleSwitchClick(sid) {
+  if (ls.switchFirst === null)      { ls.switchFirst = sid; render(); }
+  else if (ls.switchFirst === sid)  { ls.switchFirst = null; render(); }
+  else {
+    const id1 = ls.switchFirst; ls.switchFirst = null;
+    api("/api/resolve_action", { stack1_id: id1, stack2_id: sid });
   }
 }
 
-/* ── arrival picker modal ────────────────────────────────────────────────── */
-function showArrivalModal(info) {
-  document.getElementById("modal-title").textContent =
-    `${info.player_name}'s ${info.location} on Day ${info.day}`;
-  document.getElementById("modal-sub").textContent =
-    `Current arrival: #${info.current} of ${info.num}. Select new position:`;
+function handleSwapClick(si, pi) {
+  if (ls.swapFirst === null)       { ls.swapFirst = pi; render(); }
+  else if (ls.swapFirst === pi)    { ls.swapFirst = null; render(); }
+  else {
+    const p1 = ls.swapFirst; ls.swapStack = null; ls.swapFirst = null;
+    api("/api/resolve_action", { stack_idx: si, play_idx1: p1, play_idx2: pi });
+  }
+}
 
-  const labels = { 1: "1st  (above the line)", 2: "2nd  (in line)", 3: "3rd  (below the line)" };
-  const opts = document.getElementById("modal-options");
-  opts.innerHTML = "";
-  for (let i = 1; i <= info.num; i++) {
-    const label = document.createElement("label");
-    label.className = "modal-radio";
-    label.innerHTML = `<input type="radio" name="arrival" value="${i}" ${i === info.current ? "checked" : ""}> ${labels[i] || `#${i}`}`;
-    opts.appendChild(label);
+function handleDeactClick(si, pi) {
+  api("/api/resolve_action", { stack_idx: si, play_idx: pi });
+}
+
+/* ══ DATE PHASE ════════════════════════════════════════════════════════════════ */
+function renderDatePhase() {
+  const di    = gs.date_phase_idx;
+  const stack = gs.stacks[di];
+  const count = gs.date_submitted_count;
+  const order = gs.date_submission_order;
+
+  if (stack.date_resolved || count >= 3) {
+    return `<div class="screen">${renderRevealScreen(di)}<div id="toast"></div></div>`;
   }
 
-  document.getElementById("modal-overlay").classList.remove("hidden");
+  const submitter = order[count];
+  const peek      = gs.date_peek_info;
+  const show      = gs.date_show_info;
 
-  document.getElementById("modal-confirm").onclick = async () => {
-    const sel = document.querySelector('input[name="arrival"]:checked');
-    if (!sel) return;
-    closeModal();
-    const resp = await apiPost("/api/set_arrival", { new_pos: +sel.value });
-    const result = resp.action_result || {};
-    G = resp;
-    render(G);
-    if (result.message) showMsg(result.message, "success");
-  };
-  document.getElementById("modal-cancel").onclick = async () => {
-    closeModal();
-    G = await apiPost("/api/cancel");
-    render(G);
-  };
+  if (!ls.dateHandoffDone) {
+    return `<div class="screen">${renderHandoffScreen(submitter, di)}<div id="toast"></div></div>`;
+  }
+  if (show && show.player === submitter && show.reveal_to === null && !ls.showTargetDone) {
+    return `<div class="screen">${renderShowTargetScreen(submitter, di)}<div id="toast"></div></div>`;
+  }
+  if (peek && peek.player === submitter && peek.peek_target === null) {
+    return `<div class="screen">${renderPeekSelectScreen(submitter, di)}<div id="toast"></div></div>`;
+  }
+  if (peek && peek.player === submitter && peek.peek_target !== null && !ls.peekChosen) {
+    const peekedMove = stack.date_moves[String(peek.peek_target)];
+    return `<div class="screen">${renderPeekScreen(submitter, peek.peek_target, peekedMove, di)}<div id="toast"></div></div>`;
+  }
+  return `<div class="screen">${renderMoveScreen(submitter, di)}<div id="toast"></div></div>`;
 }
 
-function showScoresModal(state) {
-  const scores = state.scores || {};
-  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const arrivals = state.arrivals_display || [];
-
-  document.getElementById("modal-title").textContent = "Current Scores";
-  document.getElementById("modal-sub").textContent = "";
-
-  const opts = document.getElementById("modal-options");
-  opts.innerHTML = `
-    <div style="margin-bottom:14px">
-      ${ranked.map(([name, pts]) =>
-        `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2a1a4a">
-          <span>${name}</span>
-          <strong style="color:${pts >= 0 ? "#80FF80" : "#FF8080"}">${pts >= 0 ? "+" : ""}${pts} pts</strong>
-        </div>`
-      ).join("")}
-    </div>
-    <div style="font-size:.8rem;color:#CCAAFF;font-weight:700;margin-bottom:6px">Breakdown:</div>
-    ${arrivals.map(r => {
-      const note = r.n === 1 ? "solo" : r.n === 2 ? "1st+1, 2nd+2" : "3rd −1";
-      return `<div style="font-size:.78rem;color:#CCCCFF;padding:2px 0">
-        Day ${r.day} – ${r.location}: ${r.players.join(" → ")} [${note}]
-      </div>`;
-    }).join("")}`;
-
-  document.getElementById("modal-overlay").classList.remove("hidden");
-  document.getElementById("modal-confirm").style.display = "none";
-  document.getElementById("modal-cancel").textContent = "Close";
-  document.getElementById("modal-cancel").onclick = () => {
-    closeModal();
-    document.getElementById("modal-confirm").style.display = "";
-    document.getElementById("modal-cancel").textContent = "Cancel";
-  };
-}
-
-function closeModal() {
-  document.getElementById("modal-overlay").classList.add("hidden");
-}
-
-/* ── END ─────────────────────────────────────────────────────────────────── */
-function endHTML(state) {
-  const scores  = state.scores || {};
-  const ranked  = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  const medals  = ["🥇", "🥈", "🥉"];
-  const arrivals = state.arrivals_display || [];
+function renderHandoffScreen(pidx, di) {
+  const peek = gs.date_peek_info;
+  const show = gs.date_show_info;
+  let note = "";
+  if (show && show.player === pidx)
+    note = `<p style="color:#FF9090;margin-bottom:8px">⚠ You have the <b>SHOW debuff</b> — you'll choose who sees your move first.</p>`;
+  if (peek && peek.player === pidx)
+    note = `<p style="color:#AA88FF;margin-bottom:8px">✦ You have the <b>PEEK bonus</b> — you'll see one other player's choice before deciding.</p>`;
 
   return `
-<div class="end-screen">
-  <h1>Game Over!</h1>
-  <div class="podium">
-    ${ranked.map(([name, pts], i) => `
-      <div class="podium-row ${i === 0 ? "rank-1" : ""}">
-        <span class="podium-medal">${medals[i] || `#${i + 1}`}</span>
-        <span class="podium-name">${name}</span>
-        <span class="podium-score">${pts >= 0 ? "+" : ""}${pts} pts</span>
-      </div>`).join("")}
-  </div>
-
-  <div class="breakdown">
-    <h3>Date Results</h3>
-    ${arrivals.map(r => {
-      let note, cls;
-      if (r.n === 1)      { note = "solo — no points";            cls = "neutral"; }
-      else if (r.n === 2) { note = "1st: +1 pt,  2nd: +2 pts";   cls = "good"; }
-      else                { note = "3rd wheel: −1 pt";             cls = "bad"; }
-      return `<div class="breakdown-row">
-        <span class="bday">Day ${r.day}</span>
-        <span class="bloc">${r.location}</span>
-        <span class="bplrs">${r.players.join(" → ")}</span>
-        <span class="bscore ${cls}">${note}</span>
-      </div>`;
-    }).join("")}
-  </div>
-
-  <button id="play-again" class="btn btn-primary">▶ Play Again</button>
-</div>`;
+  <div class="handoff-screen">
+    <div style="font-size:2.2rem">📱</div>
+    <div class="player-name-big" style="color:${pc(pidx)}">${pname(pidx)}</div>
+    <p>Pass the device to <b>${pname(pidx)}</b>.<br>Everyone else — look away!</p>
+    ${note}
+    ${renderDateInfoCompact(di)}
+    <br>
+    <button class="btn btn-primary" id="btn-handoff-confirm">I'm ${pname(pidx)} — Ready ▶</button>
+  </div>`;
 }
 
-function bindEnd() {
-  document.getElementById("play-again").addEventListener("click", async () => {
-    G = await apiPost("/api/reset");
-    render(G);
+function renderShowTargetScreen(pidx, di) {
+  const others = gs.players.map((p, i) => i).filter(i => i !== pidx);
+  const btns   = others.map(i =>
+    `<button class="btn" data-target="${i}" id="show-tgt-${i}"
+      style="background:${pc(i)};color:#fff;margin:6px">
+      Reveal to ${pname(i)}
+    </button>`).join("");
+  return `
+  <div class="move-screen">
+    <div class="date-info-box">
+      <div class="date-num">Date ${di + 1} — Show Debuff</div>
+      <p style="margin-top:8px;color:#FF9090">⚠ <b>Card 6 Debuff:</b> Before choosing your move, reveal your choice to one player (honor system).</p>
+      <p style="margin-top:8px;color:#BBAACC">Who will see your move first?</p>
+      <div style="margin-top:10px">${btns}</div>
+    </div>
+  </div>`;
+}
+
+function renderPeekSelectScreen(pidx, di) {
+  const order   = gs.date_submission_order;
+  const already = order.slice(0, gs.date_submitted_count);
+  if (already.length === 0) return renderMoveScreen(pidx, di);
+  const btns = already.map(i =>
+    `<button class="btn btn-blue" data-peek="${i}" id="peek-sel-${i}" style="margin:6px">
+      Peek at ${pname(i)}'s move
+    </button>`).join("");
+  return `
+  <div class="move-screen">
+    <div class="date-info-box">
+      <div class="date-num">Date ${di + 1} — Peek Bonus</div>
+      <p style="margin-top:8px;color:#AA88FF">✦ <b>Card 3 Bonus:</b> Choose one player's move to peek at before you decide.</p>
+      <div style="margin-top:10px">${btns}</div>
+    </div>
+  </div>`;
+}
+
+function renderPeekScreen(pidx, peekTarget, peekedMove, di) {
+  const mLabel = peekedMove === "MM"
+    ? `<span style="color:#6699FF;font-size:1.5rem;font-weight:900">💘 Make a Move (MM)</span>`
+    : `<span style="color:#66CC88;font-size:1.5rem;font-weight:900">🛡 Play it Safe (PS)</span>`;
+  return `
+  <div class="move-screen">
+    <div class="date-info-box">
+      <div class="date-num">Date ${di + 1} — Peeking</div>
+      <p style="margin-top:8px;color:#AA88FF">You peeked at <b style="color:${pc(peekTarget)}">${pname(peekTarget)}</b>'s move:</p>
+      <div style="text-align:center;margin:16px 0">${mLabel}</div>
+      <div style="text-align:center">
+        <button class="btn btn-primary" id="btn-after-peek">Continue to choose →</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderMoveScreen(pidx, di) {
+  const show = gs.date_show_info;
+  let showNote = "";
+  if (show && show.player === pidx && show.reveal_to !== null) {
+    showNote = `<p style="color:#FF9090;margin-bottom:10px">⚠ Remember: show your choice to <b style="color:${pc(show.reveal_to)}">${pname(show.reveal_to)}</b> before they see the reveal!</p>`;
+  }
+  return `
+  <div class="move-screen">
+    ${renderDateInfoCompact(di)}
+    ${showNote}
+    <p style="text-align:center;color:#BBAACC;margin-bottom:6px">
+      What will <b style="color:${pc(pidx)}">${pname(pidx)}</b> do?
+    </p>
+    <div class="move-choices">
+      <button class="btn btn-mm" id="btn-mm" data-pidx="${pidx}">💘 Make a Move<br><span style="font-size:.75rem;font-weight:500">(MM)</span></button>
+      <button class="btn btn-ps" id="btn-ps" data-pidx="${pidx}">🛡 Play it Safe<br><span style="font-size:.75rem;font-weight:500">(PS)</span></button>
+    </div>
+  </div>`;
+}
+
+function renderRevealScreen(di) {
+  const stack  = gs.stacks[di];
+  const plays  = stack.plays;
+  const twPos  = twPosAtDate(di);
+  const scores = stack.date_scores || {};
+  const moves  = stack.date_moves  || {};
+
+  const rows = plays.map((p, i) => {
+    const isTW = (i === twPos);
+    const move = moves[String(p.player_idx)] || "?";
+    const sc   = scores[String(p.player_idx)];
+    const scTxt = sc != null
+      ? `<span class="${sc >= 0 ? "score-pos" : "score-neg"}">${sc >= 0 ? "+" : ""}${sc}</span>`
+      : "";
+    return `<tr class="${isTW ? "tw-row" : ""}">
+      <td><span class="dot" style="background:${pc(p.player_idx)};display:inline-block"></span>
+        ${pname(p.player_idx)} ${isTW ? '<span class="tw-indicator">👀3W</span>' : ""}
+      </td>
+      <td>${["1st","2nd","3rd"][i]}</td>
+      <td class="move-${move.toLowerCase()}">${move === "MM" ? "💘 MM" : "🛡 PS"}</td>
+      <td>${scTxt}</td>
+    </tr>`;
+  }).join("");
+
+  const modHtml   = renderDateModifiers(di);
+  const nextDi    = di + 1;
+  const btnLabel  = nextDi < 6 ? `Next Date (${nextDi + 1}) →` : "View Final Scores →";
+  const btnCls    = nextDi < 6 ? "btn-primary" : "btn-gold";
+
+  return `
+  <div class="reveal-screen">
+    <h2 style="text-align:center">Date ${di + 1} Results</h2>
+    ${modHtml}
+    <table class="reveal-table">
+      <thead><tr><th>Player</th><th>Arrival</th><th>Move</th><th>Score</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="padding:8px 12px;background:#1a0c2e;border-radius:8px;font-size:.85rem;color:#BBAACC;margin:10px 0">
+      Running totals: ${gs.players.map((p, i) =>
+        `<span style="color:${pc(i)}">${p.name}: ${gs.total_scores[i] >= 0 ? "+" : ""}${gs.total_scores[i]}</span>`
+      ).join(" · ")}
+    </div>
+    <div style="text-align:center;margin-top:14px">
+      <button class="btn ${btnCls}" id="btn-next-date">${btnLabel}</button>
+    </div>
+  </div>`;
+}
+
+function renderDateInfoCompact(di) {
+  const stack  = gs.stacks[di];
+  const plays  = stack.plays;
+  const twPos  = twPosAtDate(di);
+  const tw     = plays[twPos];
+  const mods   = renderDateModifiers(di);
+  return `
+  <div class="date-info-box" style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+      <span class="date-num">Date ${di + 1}</span>
+      <span class="tw-label">3rd Wheel: ${tw ? pname(tw.player_idx) : "?"}</span>
+    </div>
+    <div style="font-size:.82rem;color:#BBAACC">
+      ${plays.map((p, i) =>
+        `<span style="color:${pc(p.player_idx)};margin-right:10px">
+          ${["1st","2nd","3rd"][i]}: ${pname(p.player_idx)}${i === twPos ? " 👀" : ""}
+        </span>`).join("")}
+    </div>
+    ${mods}
+  </div>`;
+}
+
+function renderDateModifiers(di) {
+  const plays = gs.stacks[di].plays;
+  const items = plays.filter(p => p.modifier_active).map(p => {
+    const info = gs.card_info[p.card_num];
+    const cls  = info.type === "bonus" ? "active-bonus" : "active-debuff";
+    return `<div class="modifier-item ${cls}">
+      ${info.type === "bonus" ? "✓" : "✗"}
+      <b style="color:${pc(p.player_idx)}">${pname(p.player_idx)}</b>
+      Card ${p.card_num}: ${info.modifier}
+    </div>`;
+  });
+  return items.length ? `<div class="modifier-list">${items.join("")}</div>` : "";
+}
+
+function bindDatePhase() {
+  const btnNext = document.getElementById("btn-next-date");
+  if (btnNext) {
+    btnNext.onclick = () => {
+      ls.dateHandoffDone = false;
+      ls.showTargetDone  = false;
+      ls.peekChosen      = false;
+      render();
+    };
+    return;
+  }
+
+  const btnHandoff = document.getElementById("btn-handoff-confirm");
+  if (btnHandoff) {
+    btnHandoff.onclick = () => { ls.dateHandoffDone = true; render(); };
+    return;
+  }
+
+  // Show target buttons
+  document.querySelectorAll("[id^='show-tgt-']").forEach(btn => {
+    btn.onclick = async () => {
+      const target = parseInt(btn.dataset.target);
+      await api("/api/set_show_target", { target_player: target });
+      ls.showTargetDone = true;
+    };
+  });
+
+  // Peek select buttons
+  document.querySelectorAll("[id^='peek-sel-']").forEach(btn => {
+    btn.onclick = async () => {
+      await api("/api/set_peek_target", { target_player: parseInt(btn.dataset.peek) });
+    };
+  });
+
+  const btnAfterPeek = document.getElementById("btn-after-peek");
+  if (btnAfterPeek) {
+    btnAfterPeek.onclick = () => { ls.peekChosen = true; render(); };
+    return;
+  }
+
+  // Move buttons
+  ["btn-mm","btn-ps"].forEach(id => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.onclick = async () => {
+      const pidx = parseInt(btn.dataset.pidx);
+      const move = id === "btn-mm" ? "MM" : "PS";
+      ls.dateHandoffDone = false;
+      ls.showTargetDone  = false;
+      ls.peekChosen      = false;
+      await api("/api/submit_move", { player_idx: pidx, move });
+    };
   });
 }
 
-/* ── bind all events for current phase ───────────────────────────────────── */
-function bindAll(state) {
-  if      (state.phase === "setup")       bindSetup();
-  else if (state.phase === "arrangement") bindArrange(state);
-  else if (state.phase === "game")        bindGame(state);
-  else if (state.phase === "end")         bindEnd();
+/* ══ END SCREEN ════════════════════════════════════════════════════════════════ */
+function renderEnd() {
+  const finals = gs.final_scores || gs.total_scores;
+  const ranked = gs.players.map((p, i) => ({name: p.name, score: finals[i], idx: i}))
+                  .sort((a, b) => b.score - a.score);
+  const medals  = ["🥇","🥈","🥉"];
+  const places  = ["first","second","third"];
 
-  // modal overlay close on bg click (only for scores modal)
-  document.getElementById("modal-overlay").addEventListener("click", e => {
-    if (e.target === document.getElementById("modal-overlay")) {
-      const cancelBtn = document.getElementById("modal-cancel");
-      if (cancelBtn) cancelBtn.click();
+  const podium = ranked.map((r, rank) => `
+    <div class="podium-row ${places[rank] || ""}">
+      <span class="podium-medal">${medals[rank] || "#" + (rank+1)}</span>
+      <span class="podium-name" style="color:${pc(r.idx)}">${r.name}</span>
+      <span class="podium-score">${r.score >= 0 ? "+" : ""}${r.score}</span>
+    </div>`).join("");
+
+  const dateRows = gs.stacks.map((s, di) => {
+    const sc    = s.date_scores || {};
+    const twIdx = s.plays[twPosAtDate(di)]?.player_idx;
+    const cells = gs.players.map((p, i) => {
+      const v = sc[String(i)];
+      return `<span style="color:${pc(i)}">${v != null ? (v >= 0 ? "+" : "") + v : "—"}</span>`;
+    }).join(" / ");
+    return `<div class="breakdown-row">
+      <span style="color:#998ABB;min-width:56px">Date ${di+1}</span>
+      <span style="flex:1">${cells}</span>
+      ${twIdx != null ? `<span style="color:#FF8888;font-size:.75rem">3W:${pname(twIdx)}</span>` : ""}
+    </div>`;
+  }).join("");
+
+  const modRows = gs.stacks.flatMap((s, di) =>
+    s.plays.filter(p => p.modifier_active && (p.card_num === 1 || p.card_num === 4))
+      .map(p => {
+        const plus = p.card_num === 1;
+        return `<div class="breakdown-row">
+          <span style="color:${pc(p.player_idx)}">${pname(p.player_idx)}</span>
+          <span style="flex:1">Card ${p.card_num} ${plus ? "Bonus" : "Debuff"} (Pile ${di+1})</span>
+          <span style="color:${plus ? "#88FFCC" : "#FF8888"}">${plus ? "+1" : "−1"}</span>
+        </div>`;
+      })
+  ).join("");
+
+  return `
+  <div class="screen">
+    <div id="end-screen">
+      <div class="title">💔 Game Over!</div>
+      <div class="subtitle">Final standings</div>
+      <div class="podium">${podium}</div>
+      <div class="score-breakdown">
+        <h3>Score Breakdown</h3>
+        ${dateRows}
+        ${modRows || ""}
+      </div>
+      <div style="text-align:center;margin-top:20px">
+        <button class="btn btn-primary" id="btn-play-again">▶ Play Again</button>
+      </div>
+    </div>
+    <div id="toast"></div>
+    ${renderCardRef()}
+  </div>`;
+}
+
+/* ══ CARD REFERENCE ════════════════════════════════════════════════════════════ */
+function renderCardRef() {
+  if (!gs || !gs.card_info) return '<div id="toast"></div>';
+  const light = gs.player_light ? gs.player_light[0] : "#FFCCCC";
+
+  const rows = [1,2,3,4,5,6].map(n => {
+    const info  = gs.card_info[n];
+    const bonus = info.type === "bonus";
+    return `<div class="ref-card-row">
+      <div class="ref-card-chip" style="background:${light}">C${n}</div>
+      <div class="ref-text">
+        <span>${info.action}</span> ·
+        <span style="color:${bonus ? "#88FFAA" : "#FF9090"}">${info.modifier}</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  return `
+  <details id="ref-panel" style="margin-top:14px">
+    <summary>📋 Card & Scoring Reference</summary>
+    <div class="ref-section">${rows}</div>
+    <div class="ref-section" style="margin-top:8px">
+      <h4>Date Scoring Matrix (Third Wheel · Normal · Normal)</h4>
+      <div class="scoring-grid">
+        <div class="sh">TW</div><div class="sh">N1</div><div class="sh">N2</div><div class="sh">TW/N1/N2</div>
+        <div class="sl">PS</div><div class="sl">PS</div><div class="sl">PS</div><div class="sr">0 / +1 / +1</div>
+        <div class="sl">PS</div><div class="sl">MM</div><div class="sl">PS</div><div class="sr">0 / −1 / +1</div>
+        <div class="sl">PS</div><div class="sl">MM</div><div class="sl">MM</div><div class="sr">0 / +2 / +2</div>
+        <div class="sl">MM</div><div class="sl">PS</div><div class="sl">PS</div><div class="sr">−2 / +1 / +1</div>
+        <div class="sl">MM</div><div class="sl">MM</div><div class="sl">PS</div><div class="sr">+2 / +2 / 0</div>
+        <div class="sl">MM</div><div class="sl">MM</div><div class="sl">MM</div><div class="sr">−2* / +2 / +2</div>
+      </div>
+      <div style="color:#998ABB;font-size:.72rem;margin-top:3px">*C2 Bonus → TW scores 0 · C5 Debuff → TW scores −4</div>
+    </div>
+    <div class="ref-section" style="margin-top:6px;font-size:.75rem;color:#998ABB">
+      <b>Third Wheel rule:</b> Piles 1–2 → 3rd arrival is 3W · Piles 3–4 → 2nd arrival · Piles 5–6 → 1st arrival
+    </div>
+  </details>`;
+}
+
+/* ══ BOOT ══════════════════════════════════════════════════════════════════════ */
+async function boot() {
+  document.getElementById("app").innerHTML = `<div style="text-align:center;padding:60px;color:#998ABB">Loading…</div><div id="toast"></div>`;
+  const data = await fetch("/api/state").then(r => r.json());
+  gs = data;
+  render();
+
+  document.getElementById("app").addEventListener("click", e => {
+    if (e.target.id === "btn-play-again" || e.target.closest("#btn-play-again")) {
+      resetLocalState();
+      api("/api/reset", {});
     }
   });
 }
+
+boot();

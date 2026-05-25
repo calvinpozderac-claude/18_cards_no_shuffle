@@ -3,39 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Don't Be the Third Wheel!</title>
+  <title>Don't Be The Third Wheel!</title>
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
-  <div id="app">Loading…</div>
-
-  <!-- Arrival-picker modal -->
-  <div id="modal-overlay" class="hidden">
-    <div id="modal">
-      <h3 id="modal-title"></h3>
-      <p id="modal-sub"></p>
-      <div id="modal-options"></div>
-      <div class="modal-btns">
-        <button id="modal-confirm" class="btn btn-primary">Confirm</button>
-        <button id="modal-cancel"  class="btn btn-cancel">Cancel</button>
-      </div>
-    </div>
+  <div id="app">
+    <div style="text-align:center;padding:60px;color:#998ABB">Loading…</div>
   </div>
-
-  <script>
-    /* constants injected once at page-load time so JS never needs its own copy */
-    const LOCATION_NAMES  = {1:"Coffee Shop",2:"Park",3:"Cinema",4:"Restaurant",5:"Beach",6:"Museum"};
-    const CARD_ABILITIES  = {
-      1:"Flip one of another player's face-up cards face down",
-      2:"Flip one of your own face-up cards face down",
-      3:"Swap the day slot of two of another player's cards",
-      4:"Swap the day slot of two of your own cards",
-      5:"Change the arrival order of an opponent's face-up card",
-      6:"Change the arrival order of one of your own face-up cards"
-    };
-    const LOC_COLORS = {1:"#FFAAAA",2:"#AAFFCC",3:"#AACCFF",4:"#CCFFAA",5:"#FFEEAA",6:"#DDAAFF"};
-    const LOC_DARK   = {1:"#C06060",2:"#50A878",3:"#5080B0",4:"#70A050",5:"#B09040",6:"#8050B0"};
-  </script>
+  <div id="toast"></div>
   <script src="/static/js/game.js"></script>
 </body>
 </html>

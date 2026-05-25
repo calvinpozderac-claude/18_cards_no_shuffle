@@ -1,182 +1,73 @@
 from flask import Flask, session, request, jsonify, render_template
 
 app = Flask(__name__)
-app.secret_key = "dtbtw-flask-secret-2024"
+app.secret_key = "dtbtw-v2-2024"
 
-LOCATION_NAMES = {
-    1: "Coffee Shop",
-    2: "Park",
-    3: "Cinema",
-    4: "Restaurant",
-    5: "Beach",
-    6: "Museum",
+# ── card definitions ───────────────────────────────────────────────────────────
+
+CARD_INFO = {
+    1: {
+        "type": "bonus",
+        "action": "Switch any two date piles",
+        "modifier": "+1 point at end of game",
+        "modifier_type": "global_plus",
+    },
+    2: {
+        "type": "bonus",
+        "action": "Swap the arrival order of any two cards in a date pile",
+        "modifier": "If third wheel in MM+MM+MM: score 0 instead of −2",
+        "modifier_type": "tw_protect",
+    },
+    3: {
+        "type": "bonus",
+        "action": "Deactivate an opponent's active bonus, or activate an opponent's avoided debuff",
+        "modifier": "Peek at one other player's move before choosing yours this date",
+        "modifier_type": "peek",
+    },
+    4: {
+        "type": "debuff",
+        "action": "Switch any two date piles",
+        "modifier": "−1 point at end of game",
+        "modifier_type": "global_minus",
+    },
+    5: {
+        "type": "debuff",
+        "action": "Swap the arrival order of any two cards in a date pile",
+        "modifier": "If third wheel in MM+MM+MM: score −4 instead of −2",
+        "modifier_type": "tw_double",
+    },
+    6: {
+        "type": "debuff",
+        "action": "Deactivate an opponent's active bonus, or activate an opponent's avoided debuff",
+        "modifier": "Must show your move to one player before they choose this date",
+        "modifier_type": "show",
+    },
 }
 
-CARD_ABILITIES = {
-    1: "Flip one of another player's face-up cards face down",
-    2: "Flip one of your own face-up cards face down",
-    3: "Swap the day slot of two of another player's cards",
-    4: "Swap the day slot of two of your own cards",
-    5: "Change the arrival order of an opponent's face-up card",
-    6: "Change the arrival order of one of your own face-up cards",
-}
-
-# ── game logic (operates on plain dicts stored in session) ────────────────────
-
-def _card_at(player, day):
-    return player["cards"][day - 1] if 1 <= day <= 6 else None
+PLAYER_COLORS = ["#E05555", "#5578E0", "#3DC470"]
+PLAYER_DARK  = ["#8B2020", "#203070", "#1A7035"]
+PLAYER_LIGHT = ["#FFCCCC", "#CCE0FF", "#C8FFDC"]
 
 
-def _key(day, ct):
-    return f"{day},{ct}"
-
-
-def _renumber(state, day, ct):
-    arr = state["arrivals"].get(_key(day, ct), [])
-    for i, pidx in enumerate(arr):
-        _card_at(state["players"][pidx], day)["arrival"] = i + 1
-
-
-def _flip_up(state, pidx, day):
-    card = _card_at(state["players"][pidx], day)
-    if not card or card["face_up"]:
-        return False
-    card["face_up"] = True
-    k = _key(day, card["card_type"])
-    state["arrivals"].setdefault(k, []).append(pidx)
-    card["arrival"] = len(state["arrivals"][k])
-    return True
-
-
-def _flip_down(state, pidx, day):
-    card = _card_at(state["players"][pidx], day)
-    if not card or not card["face_up"]:
-        return False
-    k = _key(day, card["card_type"])
-    arr = state["arrivals"].get(k, [])
-    if pidx in arr:
-        arr.remove(pidx)
-        state["arrivals"][k] = arr
-        _renumber(state, day, card["card_type"])
-    card["face_up"] = False
-    card["arrival"] = 0
-    return True
-
-
-def _swap_days(state, pidx, day1, day2):
-    player = state["players"][pidx]
-    c1, c2 = _card_at(player, day1), _card_at(player, day2)
-    if not c1 or not c2 or day1 == day2:
-        return False
-    for day, card in [(day1, c1), (day2, c2)]:
-        if card["face_up"]:
-            k = _key(day, card["card_type"])
-            arr = state["arrivals"].get(k, [])
-            if pidx in arr:
-                arr.remove(pidx)
-                state["arrivals"][k] = arr
-                _renumber(state, day, card["card_type"])
-    player["cards"][day1 - 1], player["cards"][day2 - 1] = (
-        player["cards"][day2 - 1],
-        player["cards"][day1 - 1],
-    )
-    # c1 is now at day2, c2 is now at day1
-    for day, card in [(day1, c2), (day2, c1)]:
-        if card["face_up"]:
-            k = _key(day, card["card_type"])
-            state["arrivals"].setdefault(k, []).append(pidx)
-            card["arrival"] = len(state["arrivals"][k])
-    return True
-
-
-def _change_arrival(state, pidx, day, new_pos):
-    card = _card_at(state["players"][pidx], day)
-    if not card or not card["face_up"]:
-        return False
-    k = _key(day, card["card_type"])
-    arr = state["arrivals"].get(k, [])
-    if pidx not in arr:
-        return False
-    new_pos = max(1, min(new_pos, len(arr)))
-    arr.remove(pidx)
-    arr.insert(new_pos - 1, pidx)
-    state["arrivals"][k] = arr
-    _renumber(state, day, card["card_type"])
-    return True
-
-
-def _check_game_over(state):
-    if all(c["face_up"] for p in state["players"] for c in p["cards"]):
-        state["game_over"] = True
-        state["phase"] = "end"
-    return state["game_over"]
-
-
-def _advance_turn(state):
-    n = len(state["players"])
-    state["turn_count"] += 1
-    state["current_player_idx"] = (state["current_player_idx"] + 1) % n
-    if _check_game_over(state):
-        return
-    skips = 0
-    while (
-        all(c["face_up"] for c in state["players"][state["current_player_idx"]]["cards"])
-        and skips < n
-    ):
-        state["turn_count"] += 1
-        state["current_player_idx"] = (state["current_player_idx"] + 1) % n
-        skips += 1
-        if _check_game_over(state):
-            return
-
-
-def _calculate_scores(state):
-    scores = {p["name"]: 0 for p in state["players"]}
-    for k, arr in state["arrivals"].items():
-        n = len(arr)
-        if n == 2:
-            scores[state["players"][arr[0]]["name"]] += 1
-            scores[state["players"][arr[1]]["name"]] += 2
-        elif n >= 3:
-            scores[state["players"][arr[2]]["name"]] -= 1
-    return scores
-
-
-def _arrivals_display(state):
-    rows = []
-    for k, arr in sorted(state["arrivals"].items(), key=lambda x: [int(v) for v in x[0].split(",")]):
-        day, ct = (int(v) for v in k.split(","))
-        rows.append({
-            "day": day,
-            "card_type": ct,
-            "location": LOCATION_NAMES[ct],
-            "players": [state["players"][pi]["name"] for pi in arr],
-            "n": len(arr),
-        })
-    return rows
-
-
-def _enrich(state):
-    s = dict(state)
-    s["location_names"] = LOCATION_NAMES
-    s["card_abilities"] = CARD_ABILITIES
-    if state["phase"] in ("game", "end"):
-        s["scores"] = _calculate_scores(state)
-        s["arrivals_display"] = _arrivals_display(state)
-    return s
-
+# ── state helpers ──────────────────────────────────────────────────────────────
 
 def _new_state():
     return {
         "phase": "setup",
         "players": [],
+        "stacks": [],
+        "next_stack_id": 0,
         "current_player_idx": 0,
         "turn_count": 0,
-        "arrivals": {},
         "pending_action": None,
         "action_ctx": {},
         "action_message": None,
-        "arrange_idx": 0,
+        "date_phase_idx": 0,
+        "date_submission_order": [],
+        "date_submitted_count": 0,
+        "date_peek_info": None,
+        "date_show_info": None,
+        "total_scores": [0, 0, 0],
         "game_over": False,
     }
 
@@ -187,12 +78,161 @@ def _gs():
     return session["game"]
 
 
-def _save(state):
-    session["game"] = state
+def _save(s):
+    session["game"] = s
     session.modified = True
 
 
-# ── routes ────────────────────────────────────────────────────────────────────
+def _card_type(n):
+    return "bonus" if n <= 3 else "debuff"
+
+
+def _modifier_initial(card_num, used_action):
+    if _card_type(card_num) == "bonus":
+        return not used_action   # bonus active iff action NOT used
+    else:
+        return used_action       # debuff active iff action WAS used
+
+
+def _get_played_cards(state, pidx):
+    return [p["card_num"]
+            for s in state["stacks"]
+            for p in s["plays"]
+            if p["player_idx"] == pidx]
+
+
+def _get_stack_by_id(state, sid):
+    for s in state["stacks"]:
+        if s["id"] == sid:
+            return s
+    return None
+
+
+def _tw_pos(date_idx):
+    """Arrival-list index of the third wheel for a given date (0-indexed)."""
+    if date_idx < 2:  return 2   # dates 1-2: 3rd arrival is third wheel
+    if date_idx < 4:  return 1   # dates 3-4: 2nd arrival
+    return 0                      # dates 5-6: 1st arrival
+
+
+def _score_date(state, di):
+    stack = state["stacks"][di]
+    plays = stack["plays"]
+    if len(plays) != 3:
+        return {}
+
+    twp = _tw_pos(di)
+    tw = plays[twp]["player_idx"]
+    normals = [plays[i]["player_idx"] for i in range(3) if i != twp]
+    n0, n1 = normals[0], normals[1]
+
+    m  = stack["date_moves"]
+    tm = m.get(str(tw), "PS")
+    m0 = m.get(str(n0),  "PS")
+    m1 = m.get(str(n1),  "PS")
+
+    if tm == "PS":
+        if   m0 == "PS" and m1 == "PS": base = {tw: 0, n0:  1, n1:  1}
+        elif m0 == "MM" and m1 == "PS": base = {tw: 0, n0: -1, n1:  1}
+        elif m0 == "PS" and m1 == "MM": base = {tw: 0, n0:  1, n1: -1}
+        else:                           base = {tw: 0, n0:  2, n1:  2}
+    else:                                # tw == "MM"
+        if   m0 == "PS" and m1 == "PS": base = {tw: -2, n0: 1, n1: 1}
+        elif m0 == "MM" and m1 == "PS": base = {tw:  2, n0: 2, n1: 0}
+        elif m0 == "PS" and m1 == "MM": base = {tw:  2, n0: 0, n1: 2}
+        else:                            # MM, MM, MM — check tw modifiers
+            tw_score = -2
+            for play in plays:
+                if play["player_idx"] == tw and play["modifier_active"]:
+                    if   play["card_num"] == 2: tw_score = 0
+                    elif play["card_num"] == 5: tw_score = -4
+            base = {tw: tw_score, n0: 2, n1: 2}
+
+    return base
+
+
+def _calc_final_scores(state):
+    scores = list(state["total_scores"])
+    for stack in state["stacks"]:
+        for play in stack["plays"]:
+            if play["modifier_active"]:
+                pi = play["player_idx"]
+                if   play["card_num"] == 1: scores[pi] += 1
+                elif play["card_num"] == 4: scores[pi] -= 1
+    return scores
+
+
+def _all_played(state):
+    return (sum(len(s["plays"]) for s in state["stacks"]) == 18
+            and len(state["stacks"]) == 6)
+
+
+def _setup_date(state, di):
+    if di >= len(state["stacks"]):
+        state["phase"] = "end"
+        state["game_over"] = True
+        return
+
+    stack = state["stacks"][di]
+    plays = stack["plays"]
+    twp   = _tw_pos(di)
+    tw    = plays[twp]["player_idx"]
+
+    peek_player = None
+    show_player = None
+    for play in plays:
+        if play["modifier_active"]:
+            if   play["card_num"] == 3: peek_player = play["player_idx"]
+            elif play["card_num"] == 6: show_player = play["player_idx"]
+
+    order = [plays[0]["player_idx"], plays[1]["player_idx"], plays[2]["player_idx"]]
+    if show_player is not None and show_player in order:
+        order.remove(show_player)
+        order.insert(0, show_player)
+    if peek_player is not None and peek_player in order:
+        order.remove(peek_player)
+        order.append(peek_player)
+
+    state["date_phase_idx"]       = di
+    state["date_submission_order"] = order
+    state["date_submitted_count"]  = 0
+    stack["date_moves"]            = {}
+    stack["date_scores"]           = {}
+    state["date_peek_info"] = {"player": peek_player, "peek_target": None} if peek_player else None
+    state["date_show_info"] = {"player": show_player, "reveal_to":   None} if show_player else None
+
+
+def _advance_card_turn(state):
+    if _all_played(state):
+        state["phase"] = "date_phase"
+        _setup_date(state, 0)
+    else:
+        n = len(state["players"])
+        state["current_player_idx"] = (state["current_player_idx"] + 1) % n
+    state["pending_action"] = None
+    state["action_ctx"]     = {}
+
+
+def _enrich(state):
+    s = dict(state)
+    s["card_info"]      = CARD_INFO
+    s["player_colors"]  = PLAYER_COLORS
+    s["player_dark"]    = PLAYER_DARK
+    s["player_light"]   = PLAYER_LIGHT
+    if state["phase"] == "end":
+        s["final_scores"] = _calc_final_scores(state)
+    if state["phase"] == "date_phase":
+        di = state["date_phase_idx"]
+        if di < len(state["stacks"]):
+            plays = state["stacks"][di]["plays"]
+            if len(plays) == 3:
+                twp = _tw_pos(di)
+                s["current_date_tw"]      = plays[twp]["player_idx"]
+                s["current_date_normals"] = [plays[i]["player_idx"] for i in range(3) if i != twp]
+    return s
+
+
+# ── routes ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -206,293 +246,264 @@ def api_state():
 
 @app.route("/api/setup", methods=["POST"])
 def api_setup():
-    data = request.json
+    data  = request.json or {}
     state = _new_state()
-    n = max(2, min(3, int(data.get("num_players", 3))))
     names = data.get("names", [])
-    for i in range(n):
-        raw = names[i] if i < len(names) else ""
+    for i in range(3):
+        raw  = names[i] if i < len(names) else ""
         name = str(raw).strip() or f"Player {i + 1}"
-        state["players"].append({"name": name, "cards": []})
-    state["phase"] = "arrangement"
-    state["arrange_idx"] = 0
+        state["players"].append({"name": name, "cards_played_to": []})
+    state["phase"] = "card_playing"
     _save(state)
     return jsonify(_enrich(state))
 
 
-@app.route("/api/arrange", methods=["POST"])
-def api_arrange():
-    data = request.json
+@app.route("/api/play_card", methods=["POST"])
+def api_play_card():
+    data  = request.json or {}
     state = _gs()
-    if state["phase"] != "arrangement":
-        return jsonify({"error": "Not in arrangement phase"}), 400
-    pidx = state["arrange_idx"]
-    arrangement = data.get("arrangement", {})  # {"card_type": day, ...}
-    cards = [None] * 6
-    for ct_str, day in arrangement.items():
-        ct, d = int(ct_str), int(day)
-        cards[d - 1] = {"card_type": ct, "face_up": False, "arrival": 0}
-    state["players"][pidx]["cards"] = cards
-    state["arrange_idx"] += 1
-    if state["arrange_idx"] >= len(state["players"]):
-        state["phase"] = "game"
-    _save(state)
-    return jsonify(_enrich(state))
+    if state["phase"] != "card_playing" or state["pending_action"]:
+        return jsonify({"error": "Cannot play a card right now"}), 400
 
+    pidx     = state["current_player_idx"]
+    player   = state["players"][pidx]
+    card_num = int(data.get("card_num", 0))
+    target   = data.get("stack_target")  # stack id (int) | "new_left" | "new_right"
+    use_act  = bool(data.get("use_action", False))
 
-@app.route("/api/flip", methods=["POST"])
-def api_flip():
-    data = request.json
-    state = _gs()
-    if state["phase"] != "game":
-        return jsonify({"error": "Not in game phase"}), 400
-    if state["pending_action"]:
-        return jsonify({"error": "Resolve pending action first"}), 400
+    # --- validate card ---
+    played = _get_played_cards(state, pidx)
+    if card_num < 1 or card_num > 6 or card_num in played:
+        return jsonify({"error": "Invalid card selection"}), 400
 
-    day = int(data.get("day"))
-    pidx = state["current_player_idx"]
-    player = state["players"][pidx]
-    card = _card_at(player, day)
+    # --- resolve stack ---
+    if target == "new_left":
+        if len(state["stacks"]) >= 6:
+            return jsonify({"error": "Maximum 6 stacks already exist"}), 400
+        sid = state["next_stack_id"]
+        state["next_stack_id"] += 1
+        state["stacks"].insert(0, {
+            "id": sid, "plays": [],
+            "date_resolved": False, "date_moves": {}, "date_scores": {}
+        })
+        actual_sid = sid
+    elif target == "new_right":
+        if len(state["stacks"]) >= 6:
+            return jsonify({"error": "Maximum 6 stacks already exist"}), 400
+        sid = state["next_stack_id"]
+        state["next_stack_id"] += 1
+        state["stacks"].append({
+            "id": sid, "plays": [],
+            "date_resolved": False, "date_moves": {}, "date_scores": {}
+        })
+        actual_sid = sid
+    else:
+        actual_sid = int(target)
+        if not any(s["id"] == actual_sid for s in state["stacks"]):
+            return jsonify({"error": "Stack not found"}), 400
 
-    if not card or card["face_up"]:
-        return jsonify({"error": "Cannot flip that card"}), 400
+    if actual_sid in player["cards_played_to"]:
+        return jsonify({"error": "Already played to this stack"}), 400
 
-    _flip_up(state, pidx, day)
-    ct = card["card_type"]
+    stack = _get_stack_by_id(state, actual_sid)
+    if stack is None:
+        return jsonify({"error": "Stack not found"}), 400
 
-    # Determine ability
-    pending, msg = None, None
+    # --- add play ---
+    play = {
+        "player_idx":      pidx,
+        "card_num":        card_num,
+        "used_action":     use_act,
+        "modifier_active": _modifier_initial(card_num, use_act),
+    }
+    stack["plays"].append(play)
+    player["cards_played_to"].append(actual_sid)
 
-    if ct == 1:
-        if any(
-            c["face_up"]
-            for pi, p in enumerate(state["players"])
-            if pi != pidx
-            for c in p["cards"]
-        ):
-            pending = "flip_other_down"
-            msg = f"Card 1 – {LOCATION_NAMES[1]}: Click an opponent's face-up card to flip it face down."
+    # --- setup pending action ---
+    pending = None
+    msg     = None
+    ctx     = {"actor": pidx}
 
-    elif ct == 2:
-        if any(c["face_up"] for c in player["cards"]):
-            pending = "flip_own_down"
-            msg = f"Card 2 – {LOCATION_NAMES[2]}: Click one of your face-up cards to flip it face down."
-
-    elif ct == 3:
-        pending = "swap_other_1"
-        msg = f"Card 3 – {LOCATION_NAMES[3]}: Click another player's card — first of two to swap days."
-
-    elif ct == 4:
-        pending = "swap_own_1"
-        msg = f"Card 4 – {LOCATION_NAMES[4]}: Click one of your cards — first of two to swap days."
-
-    elif ct == 5:
-        if any(
-            c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
-            for pi, p in enumerate(state["players"])
-            if pi != pidx
-            for d, c in enumerate(p["cards"])
-        ):
-            pending = "change_arr_other"
-            msg = f"Card 5 – {LOCATION_NAMES[5]}: Click an opponent's face-up card to change its arrival order."
-
-    elif ct == 6:
-        if any(
-            c["face_up"] and len(state["arrivals"].get(_key(d + 1, c["card_type"]), [])) >= 2
-            for d, c in enumerate(player["cards"])
-        ):
-            pending = "change_arr_own"
-            msg = f"Card 6 – {LOCATION_NAMES[6]}: Click one of your face-up cards to change its arrival order."
+    if use_act:
+        if card_num in (1, 4):
+            if len(state["stacks"]) >= 2:
+                pending = "switch_piles"
+                msg     = (f"Card {card_num} — Switch Piles: "
+                           "Select any two date piles to swap their positions.")
+        elif card_num in (2, 5):
+            has_valid = any(len(s["plays"]) >= 2 for s in state["stacks"])
+            if has_valid:
+                pending = "swap_order"
+                msg     = (f"Card {card_num} — Swap Order: "
+                           "Select a pile with 2+ cards, then pick two cards to swap.")
+        elif card_num in (3, 6):
+            has_target = any(
+                p["player_idx"] != pidx and not p["used_action"]
+                for s in state["stacks"] for p in s["plays"]
+            )
+            if has_target:
+                pending = "deact_act"
+                msg     = (f"Card {card_num} — Deactivate/Activate: "
+                           "Select an opponent's card that was played WITHOUT action.")
 
     if pending:
         state["pending_action"] = pending
-        state["action_ctx"] = {"actor": pidx}
+        state["action_ctx"]     = ctx
         state["action_message"] = msg
     else:
-        state["pending_action"] = None
-        state["action_ctx"] = {}
         state["action_message"] = None
-        _advance_turn(state)
+        _advance_card_turn(state)
 
     _save(state)
     return jsonify(_enrich(state))
 
 
-@app.route("/api/action", methods=["POST"])
-def api_action():
-    data = request.json
-    state = _gs()
-    if state["phase"] != "game" or not state["pending_action"]:
+@app.route("/api/resolve_action", methods=["POST"])
+def api_resolve_action():
+    data   = request.json or {}
+    state  = _gs()
+    action = state["pending_action"]
+    if not action:
         return jsonify({"error": "No pending action"}), 400
 
-    action = state["pending_action"]
-    ctx = state["action_ctx"]
-    actor = ctx["actor"]
-    tpi = int(data.get("player_idx", -1))
-    tday = int(data.get("day", -1))
+    actor = state["action_ctx"].get("actor", 0)
+    err   = None
+    msg   = None
 
-    err = None
-    done = False
-    needs_pos = False
-    arrival_info = None
-    success_msg = None
-
-    if action == "flip_other_down":
-        if tpi == actor:
-            err = "Must target an opponent's card."
+    if action == "switch_piles":
+        id1 = int(data.get("stack1_id", -1))
+        id2 = int(data.get("stack2_id", -1))
+        i1  = next((i for i, s in enumerate(state["stacks"]) if s["id"] == id1), -1)
+        i2  = next((i for i, s in enumerate(state["stacks"]) if s["id"] == id2), -1)
+        if i1 == -1 or i2 == -1:
+            err = "Stack not found."
+        elif i1 == i2:
+            err = "Must select two different piles."
         else:
-            card = _card_at(state["players"][tpi], tday)
-            if not card or not card["face_up"]:
-                err = "Must target a face-up card."
+            state["stacks"][i1], state["stacks"][i2] = state["stacks"][i2], state["stacks"][i1]
+            msg = f"Switched pile positions {i1 + 1} and {i2 + 1}!"
+
+    elif action == "swap_order":
+        si  = int(data.get("stack_idx",  -1))
+        pi1 = int(data.get("play_idx1", -1))
+        pi2 = int(data.get("play_idx2", -1))
+        if si < 0 or si >= len(state["stacks"]):
+            err = "Invalid pile."
+        else:
+            plays = state["stacks"][si]["plays"]
+            if not (0 <= pi1 < len(plays) and 0 <= pi2 < len(plays) and pi1 != pi2):
+                err = "Invalid card indices."
             else:
-                _flip_down(state, tpi, tday)
-                success_msg = f"Flipped {state['players'][tpi]['name']}'s {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
-                done = True
+                plays[pi1], plays[pi2] = plays[pi2], plays[pi1]
+                msg = f"Swapped arrival order in pile {si + 1}!"
 
-    elif action == "flip_own_down":
-        if tpi != actor:
-            err = "Must target your own card."
+    elif action == "deact_act":
+        si = int(data.get("stack_idx", -1))
+        pi = int(data.get("play_idx",  -1))
+        if si < 0 or si >= len(state["stacks"]):
+            err = "Invalid pile."
         else:
-            card = _card_at(state["players"][tpi], tday)
-            if not card or not card["face_up"]:
-                err = "Must target a face-up card."
+            plays = state["stacks"][si]["plays"]
+            if pi < 0 or pi >= len(plays):
+                err = "Invalid card."
             else:
-                _flip_down(state, tpi, tday)
-                success_msg = f"Flipped your {LOCATION_NAMES[card['card_type']]} (Day {tday}) face down!"
-                done = True
-
-    elif action == "swap_other_1":
-        if tpi == actor:
-            err = "Must target another player's card."
-        else:
-            ctx["first_pi"] = tpi
-            ctx["first_day"] = tday
-            state["pending_action"] = "swap_other_2"
-            state["action_message"] = (
-                f"Selected {state['players'][tpi]['name']}'s Day {tday}. "
-                f"Now click a second card from the same player."
-            )
-
-    elif action == "swap_other_2":
-        if tpi == actor:
-            err = "Must target another player's card."
-        elif tpi != ctx.get("first_pi"):
-            err = "Must pick two cards from the same player."
-        elif tday == ctx.get("first_day"):
-            err = "Must select a different day."
-        else:
-            _swap_days(state, tpi, ctx["first_day"], tday)
-            success_msg = f"Swapped {state['players'][tpi]['name']}'s Day {ctx['first_day']} and Day {tday}!"
-            done = True
-
-    elif action == "swap_own_1":
-        if tpi != actor:
-            err = "Must target your own card."
-        else:
-            ctx["first_day"] = tday
-            state["pending_action"] = "swap_own_2"
-            state["action_message"] = (
-                f"Selected your Day {tday}. Now click a second card of yours to complete the swap."
-            )
-
-    elif action == "swap_own_2":
-        if tpi != actor:
-            err = "Must target your own card."
-        elif tday == ctx.get("first_day"):
-            err = "Must select a different day."
-        else:
-            _swap_days(state, actor, ctx["first_day"], tday)
-            success_msg = f"Swapped your Day {ctx['first_day']} and Day {tday}!"
-            done = True
-
-    elif action in ("change_arr_other", "change_arr_own"):
-        is_other = action == "change_arr_other"
-        if is_other and tpi == actor:
-            err = "Must target an opponent's card."
-        elif not is_other and tpi != actor:
-            err = "Must target your own card."
-        else:
-            card = _card_at(state["players"][tpi], tday)
-            if not card or not card["face_up"]:
-                err = "Must target a face-up card."
-            else:
-                k = _key(tday, card["card_type"])
-                arr = state["arrivals"].get(k, [])
-                if len(arr) < 2:
-                    err = "Only one player at that date — no arrival order to change."
+                tp = plays[pi]
+                if tp["player_idx"] == actor:
+                    err = "Cannot target your own card."
+                elif tp["used_action"]:
+                    err = "Target must be a card played WITHOUT action."
                 else:
-                    ctx["target_pi"] = tpi
-                    ctx["target_day"] = tday
-                    state["pending_action"] = "set_arrival"
-                    state["action_message"] = (
-                        f"Select the new arrival position for "
-                        f"{state['players'][tpi]['name']}'s "
-                        f"{LOCATION_NAMES[card['card_type']]} on Day {tday}."
-                    )
-                    needs_pos = True
-                    arrival_info = {
-                        "player_name": state["players"][tpi]["name"],
-                        "location": LOCATION_NAMES[card["card_type"]],
-                        "day": tday,
-                        "current": card["arrival"],
-                        "num": len(arr),
-                    }
+                    tp["modifier_active"] = not tp["modifier_active"]
+                    tname = state["players"][tp["player_idx"]]["name"]
+                    ct    = _card_type(tp["card_num"])
+                    if ct == "bonus":
+                        msg = f"Deactivated {tname}'s Card {tp['card_num']} bonus!"
+                    else:
+                        msg = f"Activated {tname}'s Card {tp['card_num']} debuff!"
 
-    if done:
-        state["pending_action"] = None
-        state["action_ctx"] = {}
-        state["action_message"] = None
-        _advance_turn(state)
+    if err:
+        return jsonify({"error": err, **_enrich(state)})
 
-    _save(state)
-    resp = _enrich(state)
-    resp["action_result"] = {
-        "error": err,
-        "done": done,
-        "needs_position": needs_pos,
-        "arrival_info": arrival_info,
-        "message": success_msg,
-    }
-    return jsonify(resp)
-
-
-@app.route("/api/set_arrival", methods=["POST"])
-def api_set_arrival():
-    data = request.json
-    state = _gs()
-    if state["pending_action"] != "set_arrival":
-        return jsonify({"error": "No arrival to set"}), 400
-    ctx = state["action_ctx"]
-    new_pos = int(data.get("new_pos", 1))
-    _change_arrival(state, ctx["target_pi"], ctx["target_day"], new_pos)
-    card = _card_at(state["players"][ctx["target_pi"]], ctx["target_day"])
-    msg = f"Changed {state['players'][ctx['target_pi']]['name']}'s {LOCATION_NAMES[card['card_type']]} arrival to position #{new_pos}!"
-    state["pending_action"] = None
-    state["action_ctx"] = {}
-    state["action_message"] = None
-    _advance_turn(state)
-    _save(state)
-    resp = _enrich(state)
-    resp["action_result"] = {"error": None, "done": True, "message": msg}
-    return jsonify(resp)
-
-
-@app.route("/api/cancel", methods=["POST"])
-def api_cancel():
-    state = _gs()
-    state["pending_action"] = None
-    state["action_ctx"] = {}
-    state["action_message"] = None
-    _advance_turn(state)
+    state["action_message"] = msg
+    _advance_card_turn(state)
     _save(state)
     return jsonify(_enrich(state))
 
 
-@app.route("/api/end_game", methods=["POST"])
-def api_end_game():
+@app.route("/api/cancel_action", methods=["POST"])
+def api_cancel_action():
     state = _gs()
-    state["phase"] = "end"
-    state["game_over"] = True
+    state["action_message"] = "Action skipped."
+    _advance_card_turn(state)
+    _save(state)
+    return jsonify(_enrich(state))
+
+
+@app.route("/api/set_show_target", methods=["POST"])
+def api_set_show_target():
+    data  = request.json or {}
+    state = _gs()
+    if state["phase"] != "date_phase" or not state["date_show_info"]:
+        return jsonify({"error": "No show modifier active"}), 400
+    state["date_show_info"]["reveal_to"] = int(data.get("target_player", -1))
+    _save(state)
+    return jsonify(_enrich(state))
+
+
+@app.route("/api/set_peek_target", methods=["POST"])
+def api_set_peek_target():
+    data  = request.json or {}
+    state = _gs()
+    if state["phase"] != "date_phase" or not state["date_peek_info"]:
+        return jsonify({"error": "No peek modifier active"}), 400
+    state["date_peek_info"]["peek_target"] = int(data.get("target_player", -1))
+    _save(state)
+    return jsonify(_enrich(state))
+
+
+@app.route("/api/submit_move", methods=["POST"])
+def api_submit_move():
+    data  = request.json or {}
+    state = _gs()
+    if state["phase"] != "date_phase":
+        return jsonify({"error": "Not in date phase"}), 400
+
+    di    = state["date_phase_idx"]
+    stack = state["stacks"][di]
+    order = state["date_submission_order"]
+    count = state["date_submitted_count"]
+
+    if count >= len(order):
+        return jsonify({"error": "All moves already submitted"}), 400
+
+    expected = order[count]
+    pidx     = int(data.get("player_idx", -1))
+    if pidx != expected:
+        return jsonify({
+            "error": f"It is {state['players'][expected]['name']}'s turn to submit"
+        }), 400
+
+    move = str(data.get("move", "")).upper()
+    if move not in ("MM", "PS"):
+        return jsonify({"error": "Move must be MM or PS"}), 400
+
+    stack["date_moves"][str(pidx)] = move
+    state["date_submitted_count"] += 1
+
+    if state["date_submitted_count"] >= 3:
+        scores = _score_date(state, di)
+        stack["date_scores"]   = {str(k): v for k, v in scores.items()}
+        stack["date_resolved"] = True
+        for pi, sc in scores.items():
+            state["total_scores"][pi] += sc
+
+        next_di = di + 1
+        if next_di >= 6:
+            state["phase"]     = "end"
+            state["game_over"] = True
+        else:
+            _setup_date(state, next_di)
+
     _save(state)
     return jsonify(_enrich(state))
 
